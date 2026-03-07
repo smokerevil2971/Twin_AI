@@ -1,0 +1,260 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-0005-0005-0005-a1b2c3d40005",
+    "name": "TwinAI Phase 2.5 Webhooks",
+    "description": "Twin AI — Phase 2.5 Gupshup Delivery Webhook Handler Tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "twinai"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "broadcast_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "message_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Login (get token)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.access_token) {",
+              "  pm.collectionVariables.set('token', j.data.access_token);",
+              "  console.log('Token saved');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"owner@test.com\",\n  \"password\": \"password123\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/auth/login",
+          "host": ["{{base_url}}"],
+          "path": ["auth", "login"]
+        },
+        "description": "Login to get JWT. Auto-saves token."
+      },
+      "response": []
+    },
+    {
+      "name": "2. Create Broadcast (to get a real message_id)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.id) {",
+              "  pm.collectionVariables.set('broadcast_id', j.data.id);",
+              "  console.log('broadcast_id saved: ' + j.data.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Webhook Test Broadcast\",\n  \"message_template\": \"Hi {{name}}, webhook test!\",\n  \"channel\": \"whatsapp\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/broadcasts",
+          "host": ["{{base_url}}"],
+          "path": ["broadcasts"]
+        },
+        "description": "Creates broadcast + queues Celery task. After this runs, check broadcast detail to get a gupshup_message_id to use in webhook tests."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Get Broadcast Detail (copy a gupshup_message_id)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.recipients && j.data.recipients.length > 0) {",
+              "  var r = j.data.recipients[0];",
+              "  if (r.gupshup_message_id) {",
+              "    pm.collectionVariables.set('message_id', r.gupshup_message_id);",
+              "    console.log('message_id saved: ' + r.gupshup_message_id);",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/broadcasts/{{broadcast_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["broadcasts", "{{broadcast_id}}"]
+        },
+        "description": "Fetch broadcast detail. Auto-saves first recipient gupshup_message_id into message_id variable."
+      },
+      "response": []
+    },
+    {
+      "name": "4. Webhook - Delivered Event",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567890,\n  \"version\": 2,\n  \"type\": \"message-event\",\n  \"payload\": {\n    \"id\": \"{{message_id}}\",\n    \"type\": \"DELIVERED\",\n    \"destination\": \"+919876543210\",\n    \"payload\": { \"type\": \"text\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/gupshup/delivery",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "gupshup", "delivery"]
+        },
+        "description": "Simulates Gupshup sending a DELIVERED callback. Expect 200 ok. Then check broadcast detail — recipient status should change to delivered and delivered_at filled."
+      },
+      "response": []
+    },
+    {
+      "name": "5. Webhook - Read Event",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567891,\n  \"version\": 2,\n  \"type\": \"message-event\",\n  \"payload\": {\n    \"id\": \"{{message_id}}\",\n    \"type\": \"READ\",\n    \"destination\": \"+919876543210\",\n    \"payload\": { \"type\": \"text\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/gupshup/delivery",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "gupshup", "delivery"]
+        },
+        "description": "Simulates Gupshup READ callback. Expect 200. Recipient status should change to read, read_at filled."
+      },
+      "response": []
+    },
+    {
+      "name": "6. Webhook - Failed Event",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567892,\n  \"version\": 2,\n  \"type\": \"message-event\",\n  \"payload\": {\n    \"id\": \"{{message_id}}\",\n    \"type\": \"FAILED\",\n    \"destination\": \"+919876543210\",\n    \"payload\": { \"type\": \"text\", \"reason\": \"invalid_number\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/gupshup/delivery",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "gupshup", "delivery"]
+        },
+        "description": "Simulates Gupshup FAILED callback. Expect 200. Recipient status=failed, failed_reason=invalid_number."
+      },
+      "response": []
+    },
+    {
+      "name": "7. Webhook - Unknown Message ID (expect 200 not_found)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567893,\n  \"version\": 2,\n  \"type\": \"message-event\",\n  \"payload\": {\n    \"id\": \"nonexistent-msg-id-000\",\n    \"type\": \"DELIVERED\",\n    \"destination\": \"+919999999999\",\n    \"payload\": { \"type\": \"text\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/gupshup/delivery",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "gupshup", "delivery"]
+        },
+        "description": "Unknown message ID — returns 200 not_found (Gupshup must get 200 to stop retrying)."
+      },
+      "response": []
+    },
+    {
+      "name": "8. Webhook - Missing Payload (expect 200 malformed)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/gupshup/delivery",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "gupshup", "delivery"]
+        },
+        "description": "Empty payload — returns 200 no_message_id. Server never errors on webhooks."
+      },
+      "response": []
+    },
+    {
+      "name": "9. Verify Updated Recipient Status",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/broadcasts/{{broadcast_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["broadcasts", "{{broadcast_id}}"]
+        },
+        "description": "Check broadcast detail after webhook tests. Recipient status should reflect the last webhook event (read/delivered/failed). delivered_at and read_at should be populated."
+      },
+      "response": []
+    }
+  ]
+}

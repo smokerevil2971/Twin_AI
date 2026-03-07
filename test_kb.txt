@@ -1,0 +1,29 @@
+This is a sample product catalog for TwinAI knowledge base testing.
+
+## Products
+
+### Product 1: Wireless Bluetooth Earbuds
+- Model: TW-Pro X1
+- Price: Rs. 1,999
+- Battery: 30 hours total (6 hours earbuds + 24 hours case)
+- Features: Active Noise Cancellation, IPX5 water resistance, 10mm drivers
+- Warranty: 1 year manufacturer warranty
+
+### Product 2: Smart Watch Series 5
+- Model: SW-Elite 5
+- Price: Rs. 4,499
+- Display: 1.8 inch AMOLED, 368x448 resolution
+- Battery: 7 days typical use
+- Features: Heart rate, SpO2, sleep tracking, 100+ sports modes, IP68
+- Warranty: 1 year manufacturer warranty
+
+### Product 3: Portable Bluetooth Speaker
+- Model: SoundBox Mini
+- Price: Rs. 899
+- Battery: 12 hours playback
+- Features: 10W output, IPX6, TWS stereo pairing, built-in mic
+- Warranty: 6 months
+
+## After Sales Service
+For any issues, WhatsApp us on our business number between 9am and 7pm.
+We offer free replacement within 7 days of purchase for manufacturing defects.

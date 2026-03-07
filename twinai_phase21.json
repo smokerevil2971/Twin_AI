@@ -1,0 +1,295 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-0001-0001-0001-a1b2c3d40001",
+    "name": "TwinAI Phase 2.1 Clients",
+    "description": "Twin AI Client Communication Agent — Phase 2.1 Client Management API Tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "twinai"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "client_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Login (get token)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.access_token) {",
+              "  pm.collectionVariables.set('token', j.data.access_token);",
+              "  console.log('Token saved from Login');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"owner@test.com\",\n  \"password\": \"password123\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/auth/login",
+          "host": ["{{base_url}}"],
+          "path": ["auth", "login"]
+        },
+        "description": "Login with registered credentials. Auto-saves access_token to collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "2. Upload Preview",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/clients/upload/preview",
+          "host": ["{{base_url}}"],
+          "path": ["clients", "upload", "preview"]
+        },
+        "description": "Upload a CSV or Excel file to preview column mapping before importing clients."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Upload Clients",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/clients/upload?name_col=Name&phone_col=Phone&email_col=Email",
+          "host": ["{{base_url}}"],
+          "path": ["clients", "upload"],
+          "query": [
+            { "key": "name_col", "value": "Name" },
+            { "key": "phone_col", "value": "Phone" },
+            { "key": "email_col", "value": "Email" }
+          ]
+        },
+        "description": "Upload and import clients from CSV or Excel. Pass column name mappings as query params."
+      },
+      "response": []
+    },
+    {
+      "name": "4. List Clients - expect 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.clients && j.data.clients.length > 0) {",
+              "  pm.collectionVariables.set('client_id', j.data.clients[0].id);",
+              "  console.log('client_id saved: ' + j.data.clients[0].id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/clients",
+          "host": ["{{base_url}}"],
+          "path": ["clients"]
+        },
+        "description": "Fetch paginated list. Auto-saves first client id to client_id variable."
+      },
+      "response": []
+    },
+    {
+      "name": "5. List Clients - search by name",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/clients?search=Rahul",
+          "host": ["{{base_url}}"],
+          "path": ["clients"],
+          "query": [
+            { "key": "search", "value": "Rahul" }
+          ]
+        },
+        "description": "Search clients by name or phone number."
+      },
+      "response": []
+    },
+    {
+      "name": "6. List Clients - opted in only",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/clients?opted_in=true",
+          "host": ["{{base_url}}"],
+          "path": ["clients"],
+          "query": [
+            { "key": "opted_in", "value": "true" }
+          ]
+        },
+        "description": "Filter clients to only those who have opted in to WhatsApp messaging."
+      },
+      "response": []
+    },
+    {
+      "name": "7. Update Client",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"opted_in\": true,\n  \"language\": \"hi\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/clients/{{client_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["clients", "{{client_id}}"]
+        },
+        "description": "Update a client record. Replace client_id variable with a real UUID from List Clients."
+      },
+      "response": []
+    },
+    {
+      "name": "8. Delete Client",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/clients/{{client_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["clients", "{{client_id}}"]
+        },
+        "description": "Soft-delete a client. Preserves broadcast history. Sets opted_in to false."
+      },
+      "response": []
+    },
+    {
+      "name": "9. Bulk Opt-in",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirmed\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/clients/bulk-opt-in",
+          "host": ["{{base_url}}"],
+          "path": ["clients", "bulk-opt-in"]
+        },
+        "description": "Bulk set opted_in=true for all clients. Requires confirmed=true in body as a safety check."
+      },
+      "response": []
+    }
+  ]
+}
