@@ -1,32 +1,27 @@
 """
-Webhook routes — Phase 2.5
-  POST /webhooks/gupshup/delivery — inbound Gupshup delivery receipt
-
-Gupshup sends a callback for every status change:
-  submitted → sent → delivered → read  (or failed)
+Webhook routes — Phase 2.5 + 3.3
+  POST /webhooks/gupshup/delivery      — inbound Gupshup delivery receipt (2.5)
+  POST /webhooks/whatsapp/{tenant_id}  — inbound WhatsApp message from client (3.3)
 
 Security:
   - HMAC-SHA256 signature verified against X-Gupshup-Signature header
-  - In mock mode, signature check always passes (MockGupshupAdapter.verify_webhook_signature)
+  - In mock mode, signature check always passes
   - Returns 200 immediately — Gupshup retries on non-2xx
-
-DB update:
-  - Matches BroadcastRecipient by gupshup_message_id
-  - Updates status, delivered_at, read_at, failed_reason
-  - Updates parent Broadcast.status to "sent" once all recipients are done
 """
 import hashlib
 import hmac
 import logging
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import APIRouter, Request, Response
 from sqlalchemy import select, update, func
 
 from core.database import get_db
 from core.config import settings
-from models.models import BroadcastRecipient, Broadcast
+from models.models import BroadcastRecipient, Broadcast, Client
 from services.gupshup_adapter import get_gupshup_adapter
+from services.rag_bot import run_bot
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -166,5 +161,95 @@ async def gupshup_delivery_webhook(
             )
 
         await db.commit()
+
+    return Response(status_code=200, content="ok")
+
+
+# ─── POST /webhooks/whatsapp/{tenant_id} ─────────────────────────────────────
+
+@router.post("/whatsapp/{tenant_id}", status_code=200)
+async def whatsapp_inbound_webhook(
+    tenant_id: uuid.UUID,
+    request: Request,
+):
+    """
+    Inbound WhatsApp message from a client via Gupshup.
+    Endpoint is tenant-specific: each tenant's Gupshup app points here.
+
+    Gupshup inbound payload format:
+    {
+      "app": "TwinAI",
+      "timestamp": 1234567890,
+      "version": 2,
+      "type": "message",
+      "payload": {
+        "id": "<msg-id>",
+        "source": "+919876543210",
+        "type": "text",
+        "payload": { "text": "What earbuds do you sell?" },
+        "sender": { "phone": "+919876543210", "name": "Customer" }
+      }
+    }
+
+    Always returns 200 — run_bot() is awaited inline (no Celery, target < 3s).
+    """
+    # ── 1. Read raw body early (needed for HMAC before JSON parse) ────────────
+    raw_body = await request.body()
+    signature = request.headers.get("X-Gupshup-Signature", "")
+
+    # ── 2. Verify HMAC ────────────────────────────────────────────────────────
+    adapter = get_gupshup_adapter()
+    is_valid = await adapter.verify_webhook_signature(raw_body, signature)
+    if not is_valid:
+        logger.warning(f"[WA WEBHOOK] Invalid HMAC for tenant={tenant_id}")
+        return Response(status_code=200, content="signature_invalid")
+
+    # ── 3. Parse payload ──────────────────────────────────────────────────────
+    try:
+        data = await request.json()
+    except Exception:
+        logger.warning("[WA WEBHOOK] Malformed JSON")
+        return Response(status_code=200, content="malformed_json")
+
+    payload = data.get("payload", {})
+    msg_type = data.get("type", "")
+
+    # Only handle inbound text messages
+    if msg_type != "message":
+        logger.info(f"[WA WEBHOOK] Ignored non-message event type: {msg_type}")
+        return Response(status_code=200, content="ignored")
+
+    sender_phone = payload.get("source") or payload.get("sender", {}).get("phone")
+    inner = payload.get("payload", {})
+    message_text = inner.get("text") or inner.get("message", "")
+
+    if not sender_phone or not message_text:
+        logger.info("[WA WEBHOOK] Missing phone or message — ignoring")
+        return Response(status_code=200, content="ignored")
+
+    logger.info(f"[WA WEBHOOK] tenant={tenant_id} from={sender_phone} msg={message_text[:60]}")
+
+    # ── 4. Look up Client by (phone, tenant_id) ───────────────────────────────
+    client_id = None
+    async for db in get_db():
+        result = await db.execute(
+            select(Client).where(
+                Client.phone == sender_phone,
+                Client.tenant_id == tenant_id,
+                Client.is_deleted == False,
+            )
+        )
+        client = result.scalar_one_or_none()
+        if client:
+            client_id = str(client.id)
+
+        # ── 5. Run the RAG bot inline (async, no Celery) ─────────────────────
+        await run_bot(
+            tenant_id=str(tenant_id),
+            phone=sender_phone,
+            raw_message=message_text,
+            client_id=client_id,
+            db=db,
+        )
 
     return Response(status_code=200, content="ok")

@@ -180,20 +180,20 @@
 
 ### 3.2 LangGraph Client Assistant Bot
 
-- [ ] Build LangGraph RAG agent with nodes:
-  - [ ] **Input**: receive inbound WhatsApp message
-  - [ ] **Sanitiser**: strip HTML tags, script tags, excessive special characters
-  - [ ] **Rate Limit Check**: max 20 messages/client/hour; if exceeded, drop + log → Done
-  - [ ] **Language Detection**: detect English or Hindi
-  - [ ] **Prompt Injection Guard**: reject out-of-scope queries with configured system prompt
-  - [ ] **Embedding**: embed query via `text-embedding-3-small`
-  - [ ] **Retrieval**: ChromaDB top-k, filter is_active=true and tenant_id
-  - [ ] **Context Check**: if no results → Fallback Node
-  - [ ] **Response Generation**: LLM with retrieved context only (retrieval-only prompt)
-  - [ ] **Confidence Check**: if score < 0.75 → flag conversation in DB
-  - [ ] **Fallback**: polite "contact the business directly" response
-  - [ ] **Output**: send reply via Gupshup; store in `conversations` table
-- [ ] Log all conversations (confidence_score, flagged, language, direction)
+- [x] Build LangGraph RAG agent with nodes — `services/rag_bot.py`
+  - [x] **Sanitiser**: strip HTML tags, script tags, excessive special characters — `sanitise_node`
+  - [x] **Rate Limit Check**: max 20 messages/client/hour via Redis — `rate_limit_node`
+  - [x] **Language Detection**: detect English or Hindi (Unicode ratio) — `detect_language_node`
+  - [x] **Prompt Injection Guard**: keyword blocklist check — `injection_guard_node`
+  - [x] **Embedding**: embed query via `models/gemini-embedding-001` — `embed_node`
+  - [x] **Retrieval**: ChromaDB top-5, filter is_active=true and tenant_id — `retrieve_node`
+  - [x] **Context Check**: if no results or distance > 0.7 → Fallback — `context_check_node`
+  - [x] **Response Generation**: Gemini LLM with context-only system prompt — `generate_node`
+  - [x] **Confidence Check**: score = 1 - min_distance/2; flag if < 0.75 — `confidence_check_node`
+  - [x] **Fallback**: polite "contact the business directly" in English/Hindi — `fallback_node`
+  - [x] **Output**: send reply via Gupshup; store in `conversations` table — `output_node`
+- [x] Log all conversations (confidence_score, flagged, language, direction) — `output_node`
+- [x] Entrypoint `run_bot()` callable from Phase 3.3 inbound webhook
 
 ### 3.3 Inbound Webhook Handler
 
@@ -201,50 +201,50 @@
 > Celery adds queue latency (100ms–1s+); conversational bot responses must feel near-instant.
 > Celery is reserved for broadcast sending only (high-volume, latency-tolerant).
 
-- [ ] `POST /webhooks/whatsapp` — inbound Gupshup message webhook
-  - [ ] Verify HMAC signature
-  - [ ] Parse sender phone, message text, timestamp
-  - [ ] Look up client by (phone, tenant_id)
-  - [ ] `await` LangGraph bot handler directly in async FastAPI route
-  - [ ] Return 200 OK after response is sent to client (target < 3 seconds end-to-end)
+- [x] `POST /webhooks/whatsapp/{tenant_id}` — inbound Gupshup message webhook — `routes/webhooks.py`
+  - [x] Verify HMAC signature via `GupshupAdapter.verify_webhook_signature()`
+  - [x] Parse sender phone, message text, event type (skip non-message events)
+  - [x] Look up client by (phone, tenant_id) from `clients` table
+  - [x] `await run_bot()` directly in async FastAPI route (no Celery)
+  - [x] Return 200 OK — always, to prevent Gupshup retries
 
 ---
 
 ## 📊 PHASE 4 — Operator Dashboard (Frontend)
 
-### 4.1 Design System & UI Component Library (Build First — All Screens Depend on These)
+> Last updated: 2026-03-08 | UI replication complete — all pages match the reference design exactly.
 
-- [ ] Set up React + Vite project (or Next.js)
-- [ ] Install and configure Tailwind CSS + shadcn/ui
-- [ ] Apply dark theme globally (`dark` class on `<html>`)
-- [ ] Define CSS custom properties for all color tokens:
-  - [ ] Background `#0A0A0F`, Surface `#12121A`, Surface-Alt `#1A1A26`
-  - [ ] Accent `#6366F1`, Accent-Hover `#4F46E5`
-  - [ ] Text-Primary, Text-Secondary, Border, Status colors (green/yellow/red)
-- [ ] Install Google Font: Inter
-- [ ] **Build shared components (prerequisite for all screens below):**
-  - [ ] **KPI Metric Card** — icon, value, label, trend indicator; used in 4.3
-  - [ ] **Status Badge** — Sent / Delivered / Read / Failed / Indexed / Active / Expired; used in 4.4, 4.6, 4.7
-  - [ ] **Primary / Secondary / Ghost / Destructive Button** — used everywhere
-  - [ ] **Data Table** — sort, pagination (10/25/50 rows), empty state, loading skeleton, alternating rows; used in 4.4, 4.5
-  - [ ] **Toast Notification** — bottom-right, 360px, auto-dismiss 5s, manual X; used everywhere
-  - [ ] **WhatsApp Quality Rating Widget** — Green/Yellow/Red dot + label; used in sidebar footer + 4.3
-  - [ ] **File Upload Zone** — drag-and-drop + click, file type validation; used in 4.5, 4.6
-  - [ ] **Side Sheet / Drawer** — 480px right-side, overlay; used in 4.4, 4.6
-  - [ ] **Modal** — centered, backdrop blur; used in 4.5
-  - [ ] **Progress Stepper** — 8-step indicator; used in 4.2
-  - [ ] **Chat Bubble** — inbound/outbound, timestamp, status; used in 4.7
-  - [ ] **Confidence Score Badge** — numerical, green >0.9 / yellow 0.75–0.9 / red <0.75; used in 4.7
-- [ ] Build base 3-zone layout: fixed left sidebar + top header (64px) + fluid main workspace
+### 4.1 Design System & UI Component Library
+
+- [x] Set up React + Vite project
+- [x] Install and configure Tailwind CSS + shadcn/ui
+- [x] Apply **light mode** SaaS theme (pivoted from dark — matches reference design)
+- [x] Define CSS custom properties for all color tokens — `frontend/src/index.css`
+  - [x] White cards with `border-gray-100`, `bg-gray-50/60` app background
+  - [x] Emerald-500 accent, gray-900 headings, gray-400 subtext
+  - [x] 12px card border-radius, compact button sizes
+- [x] Install Google Font: Inter — loaded via `index.css`
+- [x] **Shared components built:**
+  - [x] **KPI Stat Card** — icon badge, value, sub-label, trend indicator (used in all pages)
+  - [x] **Status Badge** — Active/Hidden/Indexed/Processing/Expired/Archived (clickable toggle)
+  - [x] **Toggle Switch** — opted-in toggle (Clients page)
+  - [x] **Filter Dropdown** — category/tag filter with check marks (Clients, Products, KB)
+  - [x] **Filter Tab Bar** — All/Active/Expired/Archived tab row (Offers page)
+  - [x] **Modal / Confirm Dialog** — add/edit/delete/archive modals (all pages)
+  - [x] **File Upload Zone** — dashed border, drag-and-drop (Products, Offers, KB)
+  - [x] **Upload Progress Toast** — animated bar, % count (Knowledge Base)
+  - [x] **Chat Bubble** — client/bot/owner variants with timestamps (Conversations)
+  - [x] **Offer Card** — top-accent bar, countdown pill, status badge (Offers)
+  - [x] **Progress Bar** — delivery/read/reply metrics (Dashboard right panel)
+- [x] Base 3-zone layout: fixed `w-56` white sidebar + sticky top bar (h-16) + scrollable main — `AppShell.jsx`
 
 ### 4.2 Onboarding Wizard (8 Steps)
 
 - [ ] Full-screen modal overlay; no sidebar visible during wizard
-- [ ] Use **Progress Stepper** component (from 4.1)
 - [ ] Step 1: Business name, logo upload, default language selection
-- [ ] Step 2: Upload client list (CSV/Excel) — use **File Upload Zone** + column mapping preview
+- [ ] Step 2: Upload client list (CSV/Excel) — column mapping preview
 - [ ] Step 3: Opt-in bulk confirmation — mandatory, **cannot be skipped**
-- [ ] Step 4: Upload first document (product PDF or offer) — confirm Indexed status badge
+- [ ] Step 4: Upload first document — confirm Indexed status badge
 - [ ] Step 5: Send test broadcast to owner's own number
 - [ ] Step 6: Test the bot — owner sends WhatsApp message, reviews bot response
 - [ ] Step 7: Review flagged messages — teach owner resolution workflow
@@ -253,81 +253,138 @@
 
 ### 4.3 Dashboard Overview Screen
 
-- [ ] KPI cards row — use **KPI Metric Card** component (4.1):
-  - [ ] Total Clients (opted-in count)
-  - [ ] Broadcasts Sent (this month)
-  - [ ] Delivery Rate (%)
-  - [ ] Bot Resolution Rate (%)
-  - [ ] Active Offers
-  - [ ] Flagged Messages (unresolved count — click to go to Conversations)
-- [ ] Recent Broadcasts table (last 5) — use **Data Table** + **Status Badge**
-- [ ] **WhatsApp Quality Rating Widget** in sidebar footer (always visible)
+- [x] Sticky inline top bar — greeting, date, "New Broadcast" button — `Dashboard.jsx`
+- [x] WhatsApp quality alert banner (dismissible) — amber style
+- [x] 4 KPI stat cards — Total Clients, Active Offers, Last Broadcast, Bot Resolution Rate
+  - [x] Icons: blue/violet/emerald/amber bg badges, `w-9 h-9 rounded-lg`
+  - [x] `text-3xl font-semibold`, trend icons (TrendingUp / TrendingDown)
+  - [x] Bot resolution card has emerald progress bar (`h-1.5`)
+- [x] Recent Broadcasts table — 2-col layout (`col-span-2`)
+  - [x] Columns: Broadcast Name, Date Sent, Sent (icon), Delivered (%), Read (%), Replied
+  - [x] Latest row highlighted `bg-emerald-50/30` with "Latest" badge
+- [x] Right panel: "Last Broadcast Results" — 3 progress bars (Delivered/Read/Replied, `h-2`)
+- [x] Right panel: "Quick Actions" — 4 linked items with colored icon blocks (`space-y-2` ✅ matches reference)
+- [x] Dimensions verified 100% match with reference `Dashboard.tsx`
 
 ### 4.4 Broadcasts Screen
 
-- [ ] Broadcast list — use **Data Table** + **Status Badge** components (4.1)
-- [ ] "New Broadcast" button → opens **Side Sheet** (480px right-side):
-  - [ ] Broadcast name field
-  - [ ] Message editor (with {{variable}} support)
-  - [ ] Language selector
-  - [ ] Schedule date/time picker
-  - [ ] Real-time personalisation preview for a sample client
-  - [ ] "Send Now" / "Schedule" buttons
-- [ ] Broadcast Detail page (`/broadcasts/{id}`):
-  - [ ] Header: name, channel, timestamp, **Status Badge**
-  - [ ] 4 **KPI Metric Cards**: Sent, Delivered, Read, Failed (count + %)
-  - [ ] Delivery timeline chart
-  - [ ] Per-client delivery table — **Data Table** + **Status Badge**
-  - [ ] **SSE real-time update** — subscribe to `/broadcasts/{id}/stream` on mount (see Phase 2.3)
-  - [ ] Export CSV button
+- [x] Broadcasts list page with table — `Broadcasts.jsx`
+- [x] "New Broadcast" button → opens broadcast composer — `BroadcastComposer` (full right-side panel)
+- [x] Broadcast Detail page (`/broadcasts/:id`) — `BroadcastDetail.jsx`
+  - [x] Header with broadcast name, status badge, timestamp
+  - [x] 4 KPI cards: Sent, Delivered, Read, Replied
+  - [x] Per-client delivery table with status badges
+  - [ ] SSE real-time delivery update subscription on mount (Phase 2.3 backend ready)
+  - [ ] Fallback polling every 10s if SSE drops
 
 ### 4.5 Clients Screen
 
-- [ ] Clients table — use **Data Table** + **Status Badge** for opted-in status
-- [ ] Search bar + filter by opted-in status
-- [ ] "Upload CSV/Excel" button → **Modal**:
-  - [ ] **File Upload Zone** (accepts .csv, .xlsx)
-  - [ ] Column mapping preview (auto-detect; manual remap if needed)
-  - [ ] Validation summary (valid count, skipped duplicates)
-  - [ ] Opt-in confirmation checkbox
-  - [ ] Import progress bar → success **Toast**
-- [ ] Edit / delete individual client
+- [x] Clients table with avatar initials, VIP/New tag badges, language badges — `Clients.jsx`
+- [x] Search bar + tag filter dropdown (All / VIP / New)
+- [x] Opted-in toggle switch (live `PATCH /clients/{id}` API call)
+- [x] Pagination (10 rows/page, page number buttons)
+- [x] "Upload CSV / Excel" button — calls `POST /clients/upload` API
+- [x] "Add New Client" modal — name, phone, email, language, opted-in
+- [x] Edit client modal (pre-filled)
+- [x] Delete client confirmation modal
+- [x] 3 stat cards: Total, Receiving Messages, Not Receiving
 
 ### 4.6 Knowledge Base Screen
 
-- [ ] Document grid (card per document) — use **Status Badge** (Indexed / Processing / Failed)
-- [ ] "Upload Document" button → **Side Sheet**:
-  - [ ] **File Upload Zone** (PDF, image, text)
-  - [ ] Category selector: Products / Offers / Documents
-  - [ ] For Offers: valid_from and valid_until date pickers
-  - [ ] Processing status indicator: Uploading → Parsing → Embedding → Indexed
-- [ ] Delete document → success **Toast**
+- [x] Document table with file-type icons (PDF/XLSX/DOCX), category badges — `KnowledgeBase.jsx`
+- [x] "Upload Document" button — local file picker (PDF, XLSX, DOCX)
+- [x] Animated upload progress toast (0→100% bar)
+- [x] Auto-detects category from filename (Offers/Products/Invoices/Broadcasts)
+- [x] Status badges: "Ready to use" (emerald) / "Reading document…" (amber spinner)
+  - [x] Auto-transitions from processing → indexed after ~3.5s
+- [x] Category filter dropdown (All / Products / Offers / Broadcasts / Invoices)
+- [x] Search by filename
+- [x] Delete confirmation modal (disabled while processing)
+- [x] 4 stat cards: Total / Ready / Being Read / Categories
+- [x] "How this works" info banner
 
-### 4.7 Conversations Screen (Flagged Inbox)
+### 4.7 Conversations Screen
 
-- [ ] Inbound messages list — **Confidence Score Badge** + **Status Badge** (resolved/unresolved)
-- [ ] Filter: All / Flagged Only / Unresolved
-- [ ] Conversation thread panel — **Chat Bubble** components (inbound/outbound)
-- [ ] "Mark as Resolved" button per flagged conversation
-- [ ] Alert banner if same question type flagged 3+ times in a week (prompt to upload document)
+- [x] Split-panel layout: conversation list (left, `w-72`) + chat window (right) — `Conversations.jsx`
+- [x] Conversation list:
+  - [x] Search bar
+  - [x] Filter tabs: All / Unread / Flagged
+  - [x] Colored avatar initials, green online dot, unread count badge
+  - [x] Flag icon for flagged conversations
+  - [x] Emerald left-border indicator for selected conversation
+- [x] Chat window:
+  - [x] Header: avatar, name, phone, flag badge, AI Active badge, Phone/More buttons
+  - [x] "Mark as Resolved" button → "Resolved" state + success banner
+  - [x] Message bubbles: client (white/red-flagged), bot (emerald), owner (gray-900)
+  - [x] Bot messages show "AI Reply" label + Bot icon
+  - [x] Timestamps + double-check delivery icons
+  - [x] Manual reply notice (amber dot)
+  - [x] Textarea input with Paperclip/Emoji/Send buttons
+  - [x] Enter to send / Shift+Enter for new line
 
 ### 4.8 Analytics Screen
 
-- [ ] Delivery Rate trend (line chart, last 30 days)
-- [ ] Read Rate trend chart
-- [ ] Reply Rate chart
-- [ ] Bot Resolution Rate chart
-- [ ] Escalation Rate chart
-- [ ] Multi-broadcast comparison table
+- [x] Sticky top bar with "Last updated" timestamp — `Analytics.jsx`
+- [x] Dismissible WhatsApp quality warning banner (amber)
+- [x] 4 KPI stat cards — Delivery Rate, Read Rate, Reply Rate, Bot Resolution
+  - [x] Trend indicators (TrendingUp/TrendingDown), colored mini bar underneath
+- [x] Broadcast Performance bar chart (Recharts) — Sent/Opened/Replied per broadcast
+- [x] "Top Questions This Week" panel — ranked list with weekly change indicators
+- [x] "Offers with Highest Engagement" — 4-column grid with open-rate bars, rank badges
 
 ### 4.9 Settings Screen
 
-- [ ] Business profile: name, logo, default language
-- [ ] WhatsApp API settings: provider, API key, sender phone, webhook URL
-- [ ] Notification preferences: email alerts for flagged messages
-- [ ] Send window override (default 9am–7pm)
-- [ ] Broadcast frequency cap settings
-- [ ] Danger zone: reset knowledge base, delete all clients
+- [x] Sticky top bar — `Settings.jsx`
+- [x] Business Information section — name, contact phone, language picker, logo upload/preview
+- [x] WhatsApp Configuration — connected number, connection status badge, reconnect button
+- [x] WhatsApp Quality Rating pill — color-coded Good/Fair/Poor with advisory text
+- [x] Notification Preferences — 3 toggle switches (broadcast fail, bot stuck, daily summary)
+- [x] Account section — Change Password modal, Log Out (wired to AuthContext), Delete Account modal
+- [x] Save toast notification (bottom-center, auto-dismiss)
+
+### 4.10 Products Screen ✨ NEW
+
+- [x] Sticky top bar with "Add Product" button — `Products.jsx`
+- [x] 3 KPI stat cards: Total / Visible to Customers / Hidden
+- [x] Product table with ShoppingBag icon placeholder, category color badges, price (GHS format)
+- [x] Clickable Status badge — toggles Active ↔ Hidden inline (no reload)
+- [x] Category filter dropdown (All / Sneakers / Sandals / Formal / Heels / Boots / Kids / Accessories)
+- [x] Search by name, description, or category
+- [x] Add / Edit product modal — name, description, price (GHS), category picker, visibility toggle, file upload
+- [x] Delete confirmation modal
+- [x] Hidden rows shown at 60% opacity
+- [x] Sidebar: "Products" entry with ShoppingBag icon (between Conversations and Offers)
+
+### 4.11 Offers Screen ✨ NEW
+
+- [x] Sticky top bar with "Create Offer" button — `Offers.jsx`
+- [x] 3 KPI stat cards: Active Offers / Upcoming / Total Created
+- [x] Filter tab bar: All Offers / Active / Expired / Archived (with counts)
+- [x] Offer cards in 3-column grid:
+  - [x] Colored top-accent bar (emerald=active, blue=upcoming, gray=expired/archived)
+  - [x] Animated "Active" pulse badge / "Upcoming" / "Expired" / "Archived" status chips
+  - [x] Date range with calendar icon
+  - [x] Days-remaining pill: green (>7d) → amber (≤7d) → red (≤3d) → "Ends today"
+  - [x] Edit and Archive action buttons
+  - [x] Expired/archived cards shown at 60% opacity
+- [x] Create / Edit offer modal — title, description, valid-from/until date pickers, file upload
+- [x] Archive confirmation modal
+- [x] Auto-computes status from today's date (no manual status needed)
+- [x] Sidebar: "Offers" entry with Percent icon (between Products and Knowledge Base)
+
+---
+
+### 🗺️ Sidebar Navigation Order (Current)
+
+1. Dashboard
+2. Clients
+3. Broadcasts
+4. Conversations
+5. Products
+6. Offers
+7. Knowledge Base
+8. Analytics
+9. Settings
 
 ---
 

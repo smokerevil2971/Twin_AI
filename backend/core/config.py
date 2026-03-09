@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Gemini (active provider)
     gemini_api_key: str = ""
     llm_provider: str = "gemini"              # "openai" | "gemini"
-    llm_model: str = "gemini-1.5-flash"       # used for response generation
+    llm_model: str = "models/gemini-2.0-flash-lite"  # used for response generation
     embedding_model: str = "models/gemini-embedding-001"  # Gemini embedding model
 
     # Gupshup

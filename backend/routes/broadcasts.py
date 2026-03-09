@@ -128,6 +128,7 @@ async def export_broadcast(
 @router.get("/{broadcast_id}/stream")
 async def stream_broadcast_status(
     broadcast_id: uuid.UUID,
+    token: str | None = None,          # EventSource can't send headers; accept ?token=...
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db=Depends(get_db),
 ):

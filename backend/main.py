@@ -12,6 +12,10 @@ from routes.clients import router as clients_router
 from routes.broadcasts import router as broadcasts_router
 from routes.webhooks import router as webhooks_router
 from routes.knowledge_base import router as knowledge_router
+from routes.analytics import router as analytics_router
+from routes.products import router as products_router
+from routes.offers import router as offers_router
+from routes.orders import router as orders_router
 
 # ─── Sentry ───────────────────────────────────────────────────────────────────
 if settings.sentry_dsn:
@@ -84,6 +88,10 @@ app.include_router(clients_router)
 app.include_router(broadcasts_router)
 app.include_router(webhooks_router)
 app.include_router(knowledge_router)
+app.include_router(analytics_router)
+app.include_router(products_router)
+app.include_router(offers_router)
+app.include_router(orders_router)
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])

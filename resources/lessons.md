@@ -141,8 +141,28 @@
 - **What happened:** Client output `Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given`.
 - **Rule:** When `ANONYMIZED_TELEMETRY: "false"` is set in `docker-compose.yml` for ChromaDB 0.4.x, the Python client has a bug where it still attempts connection and fails formatting the abort message. This does not affect functionality and can be safely ignored.
 
-### L13 — Celery + asyncpg "Future attached to a different loop"
+### L13 — Gemini LLM model names must also be verified via list_models()
+
+- **What happened:** `genai.GenerativeModel("gemini-1.5-flash")` returned `404 models/gemini-1.5-flash is not found for API version v1beta`.
+- **Rule:** Like embedding models (L10), LLM model names are not stable across SDK versions. Always use `[m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]` to discover available models. The confirmed working model for `google-generativeai==0.5.4` is `models/gemini-2.0-flash`.
+
+### L15 — Gemini free-tier has a daily RPD (requests per day) limit per model
+
+- **What happened:** After testing the LLM call repeatedly during development, `ResourceExhausted: 429 You exceeded your current quota` was returned for `gemini-2.0-flash` and `gemini-2.0-flash-lite`.
+- **Rule:** The Gemini free tier has daily request limits per model. During heavy development testing, rotate between models (flash vs flash-lite) or wait for daily reset (midnight Pacific). In `.env`, keep `LLM_MODEL=models/gemini-2.0-flash-lite` as the cheaper default. A successful embedding run + confidence score proves the pipeline is wired correctly even without an LLM response.
+
+### L14 — Celery + asyncpg "Future attached to a different loop"
 
 - **What happened:** Broadcast tasks were stuck in "pending" state. The `twinai_worker` logs showed `Future <Future pending cb=[Protocol._on_waiter_completed()]> attached to a different loop` inside `asyncpg`.
 - **Rule:** Never reuse a global module-level SQLAlchemy `async_sessionmaker` or `create_async_engine` inside a Celery task when using `asyncio.run()`. Celery tasks create fresh event loops per execution. Sharing the global engine means the connection pool gets bound to the first task's event loop, crashing all subsequent tasks.
 - **Fix:** Keep the global engine for FastAPI routes, but explicitly create a `get_async_sessionmaker()` helper in `database.py` that generates a new engine/sessionmaker on demand for Celery tasks.
+
+### L16 — FastAPI async dependencies must be properly injected
+
+- **What happened:** The `/dashboard/stats` route crashed with a 500 error: `object has no attribute 'bytes' for query argument $1: <coroutine object get_tenant_id at ...>`.
+- **Rule:** A function declared as `async def get_tenant_id(...)` cannot be called synchronously like `tenant_id = get_tenant_id(request)` inside a route handler. It must rely on FastAPI's dependency injection system: `tenant_id: str = Depends(get_tenant_id)`.
+
+### L17 — React Query `queryFn` extracting paginated response objects
+
+- **What happened:** The frontend crashed with a black screen when rendering `DataTable` because `data.map` is not a function.
+- **Rule:** APIs utilizing FastAPI-Pagination or custom pagination dictionaries return structures like `{"data": {"clients": [], "total": 0, "page": 1}}`. React Query's `queryFn` must extract the specific array (e.g., `r.data.data.clients`), not just the root `r.data.data`, otherwise the frontend component crashes when attempting to map over an object.

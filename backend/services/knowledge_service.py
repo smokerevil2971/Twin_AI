@@ -98,6 +98,33 @@ def get_chroma_collection(tenant_id: uuid.UUID) -> chromadb.Collection:
     )
 
 
+def query_knowledge_base(
+    tenant_id: uuid.UUID,
+    query_embedding: list[float],
+    n_results: int = 5,
+) -> dict:
+    """
+    Query ChromaDB for the top-k chunks most similar to the query embedding.
+    Only returns chunks where is_active == 'true'.
+    Returns {"documents": [...], "distances": [...]}
+    """
+    collection = get_chroma_collection(tenant_id)
+    count = collection.count()
+    if count == 0:
+        return {"documents": [], "distances": []}
+
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=min(n_results, count),
+        where={"is_active": "true"},
+        include=["documents", "distances"],
+    )
+    docs = results["documents"][0] if results["documents"] else []
+    dists = results["distances"][0] if results["distances"] else []
+    logger.info(f"[KB] Retrieved {len(docs)} chunks for tenant {tenant_id}")
+    return {"documents": docs, "distances": dists}
+
+
 # ─── Embeddings ───────────────────────────────────────────────────────────────
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
