@@ -1,0 +1,147 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-0007-0007-0007-a1b2c3d40007",
+    "name": "TwinAI Phase 3.3 Inbound WhatsApp",
+    "description": "Twin AI — Phase 3.3 Inbound WhatsApp message webhook tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "twinai"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "tenant_id", "value": "479284db-0213-4b91-8102-f84cd5104aff", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Login (get token)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "if (j.data && j.data.access_token) {",
+              "  pm.collectionVariables.set('token', j.data.access_token);",
+              "  console.log('Token saved');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"owner@test.com\",\n  \"password\": \"password123\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": { "raw": "{{base_url}}/auth/login", "host": ["{{base_url}}"], "path": ["auth", "login"] }
+      },
+      "response": []
+    },
+    {
+      "name": "2. Inbound Message - Product Question",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567890,\n  \"version\": 2,\n  \"type\": \"message\",\n  \"payload\": {\n    \"id\": \"inbound-msg-001\",\n    \"source\": \"+919876543210\",\n    \"type\": \"text\",\n    \"payload\": {\n      \"text\": \"What earbuds do you sell and what is the price?\"\n    },\n    \"sender\": {\n      \"phone\": \"+919876543210\",\n      \"name\": \"Test Customer\"\n    }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/whatsapp/{{tenant_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "whatsapp", "{{tenant_id}}"]
+        },
+        "description": "Simulates a customer asking about earbuds. RAG bot should retrieve from knowledge base and reply via Gupshup. Check docker logs for [BOT] and [MOCK GUPSHUP] lines."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Inbound Message - Hindi Query",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567891,\n  \"version\": 2,\n  \"type\": \"message\",\n  \"payload\": {\n    \"id\": \"inbound-msg-002\",\n    \"source\": \"+919876543211\",\n    \"type\": \"text\",\n    \"payload\": {\n      \"text\": \"आपके पास कौन से उत्पाद हैं?\"\n    },\n    \"sender\": { \"phone\": \"+919876543211\", \"name\": \"Test\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/whatsapp/{{tenant_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "whatsapp", "{{tenant_id}}"]
+        },
+        "description": "Hindi question. Bot should detect Hindi and reply in Hindi. Check logs for 'language = hi'."
+      },
+      "response": []
+    },
+    {
+      "name": "4. Inbound Message - Blocked Topic (weather)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567892,\n  \"version\": 2,\n  \"type\": \"message\",\n  \"payload\": {\n    \"id\": \"inbound-msg-003\",\n    \"source\": \"+919876543212\",\n    \"type\": \"text\",\n    \"payload\": { \"text\": \"What is the weather today in Mumbai?\" },\n    \"sender\": { \"phone\": \"+919876543212\", \"name\": \"Test\" }\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/whatsapp/{{tenant_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "whatsapp", "{{tenant_id}}"]
+        },
+        "description": "Out-of-scope query. Injection guard should trigger. Response = fallback polite message. Logs show 'injection guard → blocked topic: weather'."
+      },
+      "response": []
+    },
+    {
+      "name": "5. Non-message Event (delivery ACK - should ignore)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Gupshup-Signature", "value": "mock-signature" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"app\": \"TwinAI\",\n  \"timestamp\": 1234567893,\n  \"version\": 2,\n  \"type\": \"message-event\",\n  \"payload\": {\n    \"id\": \"msg-123\",\n    \"type\": \"DELIVERED\",\n    \"destination\": \"+919876543210\"\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/webhooks/whatsapp/{{tenant_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["webhooks", "whatsapp", "{{tenant_id}}"]
+        },
+        "description": "Event type is 'message-event' (delivery ACK). Should return 200 with 'ignored' and NOT trigger bot."
+      },
+      "response": []
+    },
+    {
+      "name": "6. Check Conversation Logs in DB",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/conversations",
+          "host": ["{{base_url}}"],
+          "path": ["conversations"]
+        },
+        "description": "NOT YET IMPLEMENTED. Planned for Phase 4. For now, verify via pgAdmin → conversations table to see logged messages with confidence_score and flagged fields."
+      },
+      "response": []
+    }
+  ]
+}
