@@ -58,7 +58,6 @@ RATE_LIMIT_MSGS = {
 # ─── State ────────────────────────────────────────────────────────────────────
 
 class BotState(TypedDict):
-    tenant_id: str
     client_id: Optional[str]
     phone: str
     raw_message: str
@@ -91,7 +90,7 @@ def sanitise_node(state: BotState) -> dict:
 async def rate_limit_node(state: BotState) -> dict:
     """Allow max 20 msgs per client per hour via Redis counter."""
     client_key = state.get("client_id") or state["phone"]
-    key = f"rate:{state['tenant_id']}:{client_key}"
+    key = f"rate:{client_key}"
     count = await increment_rate(key, window_seconds=3600)
     logger.info(f"[BOT] rate check → {key} = {count}")
     if count > MAX_MSGS_PER_HOUR:
@@ -141,7 +140,6 @@ def retrieve_node(state: BotState) -> dict:
     if not state.get("query_embedding"):
         return {"retrieved_chunks": [], "retrieved_distances": []}
     results = query_knowledge_base(
-        tenant_id=uuid.UUID(state["tenant_id"]),
         query_embedding=state["query_embedding"],
         n_results=5,
     )
@@ -237,7 +235,6 @@ async def output_node(state: BotState) -> dict:
     if db:
         from models.models import Conversation
         conv = Conversation(
-            tenant_id=uuid.UUID(state["tenant_id"]),
             client_id=uuid.UUID(state["client_id"]) if state.get("client_id") else None,
             direction="inbound",
             message=state["raw_message"],
@@ -328,7 +325,6 @@ def _get_adapter():
 # ─── Public entrypoint ────────────────────────────────────────────────────────
 
 async def run_bot(
-    tenant_id: str,
     phone: str,
     raw_message: str,
     client_id: str | None = None,
@@ -336,10 +332,9 @@ async def run_bot(
 ) -> dict:
     """
     Runs the full RAG pipeline and returns the final state.
-    Call this from the inbound webhook handler (Phase 3.3).
+    Call this from the inbound webhook handler.
     """
     initial: BotState = {
-        "tenant_id": tenant_id,
         "client_id": client_id,
         "phone": phone,
         "raw_message": raw_message,

@@ -88,27 +88,24 @@ def get_chroma_client() -> chromadb.HttpClient:
     )
 
 
-def get_chroma_collection(tenant_id: uuid.UUID) -> chromadb.Collection:
-    """Returns tenant-specific ChromaDB collection (creates if not exists)."""
+def get_chroma_collection() -> chromadb.Collection:
+    """Returns the single shared ChromaDB collection."""
     client = get_chroma_client()
-    collection_name = f"tenant_{str(tenant_id).replace('-', '_')}"
     return client.get_or_create_collection(
-        name=collection_name,
+        name="knowledge_base",
         metadata={"hnsw:space": "cosine"},
     )
 
 
 def query_knowledge_base(
-    tenant_id: uuid.UUID,
     query_embedding: list[float],
     n_results: int = 5,
 ) -> dict:
     """
-    Query ChromaDB for the top-k chunks most similar to the query embedding.
+    Query ChromaDB for top-k chunks most similar to the query embedding.
     Only returns chunks where is_active == 'true'.
-    Returns {"documents": [...], "distances": [...]}
     """
-    collection = get_chroma_collection(tenant_id)
+    collection = get_chroma_collection()
     count = collection.count()
     if count == 0:
         return {"documents": [], "distances": []}
@@ -121,7 +118,6 @@ def query_knowledge_base(
     )
     docs = results["documents"][0] if results["documents"] else []
     dists = results["distances"][0] if results["distances"] else []
-    logger.info(f"[KB] Retrieved {len(docs)} chunks for tenant {tenant_id}")
     return {"documents": docs, "distances": dists}
 
 
@@ -149,7 +145,6 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 async def ingest_document(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     file_bytes: bytes,
     filename: str,
     category: str,
@@ -188,12 +183,11 @@ async def ingest_document(
         raise HTTPException(502, f"Embedding service error: {str(e)}")
 
     # Store in ChromaDB
-    collection = get_chroma_collection(tenant_id)
+    collection = get_chroma_collection()
     doc_id = uuid.uuid4()
     chroma_ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
     metadata_list = [
         {
-            "tenant_id": str(tenant_id),
             "doc_id": str(doc_id),
             "category": category,
             "filename": filename,
@@ -211,12 +205,11 @@ async def ingest_document(
         documents=chunks,
         metadatas=metadata_list,
     )
-    logger.info(f"[KB] Indexed {len(chunks)} chunks for tenant {tenant_id} in collection tenant_{str(tenant_id).replace('-','_')}")
+    logger.info(f"[KB] Indexed {len(chunks)} chunks into knowledge_base collection")
 
     # Save Postgres record
     kb_record = KnowledgeBase(
         id=doc_id,
-        tenant_id=tenant_id,
         filename=filename,
         category=category,
         chroma_ids=chroma_ids,
@@ -245,12 +238,11 @@ async def ingest_document(
 
 async def list_documents(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     category: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
-    q = select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id)
+    q = select(KnowledgeBase)
     if category:
         q = q.where(KnowledgeBase.category == category)
 
@@ -276,13 +268,11 @@ async def list_documents(
 
 async def delete_document(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     doc_id: uuid.UUID,
 ) -> dict:
     result = await db.execute(
         select(KnowledgeBase).where(
             KnowledgeBase.id == doc_id,
-            KnowledgeBase.tenant_id == tenant_id,
         )
     )
     record = result.scalar_one_or_none()
@@ -291,7 +281,7 @@ async def delete_document(
 
     # Remove from ChromaDB
     try:
-        collection = get_chroma_collection(tenant_id)
+        collection = get_chroma_collection()
         collection.delete(ids=record.chroma_ids)
         logger.info(f"[KB] Deleted {len(record.chroma_ids)} vectors for doc {doc_id}")
     except Exception as e:

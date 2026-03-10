@@ -45,3 +45,15 @@ htmlcov/
 node_modules/
 frontend/dist/
 frontend/.next/
+
+# ─── Runtime & generated ──────────────────────────────
+celerybeat-schedule
+progress.json
+temp_*.txt
+
+# ─── Scratch / dev files ──────────────────────────────
+backend/test_*.py
+read_docx.py
+
+# ─── Office lock files ────────────────────────────────
+~$*

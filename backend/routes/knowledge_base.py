@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, UploadFile, Query
 
 from core.database import get_db
-from core.security import get_tenant_id
+from core.security import get_current_user
 from core.responses import success_response
 from services import knowledge_service
 
@@ -28,7 +28,7 @@ async def upload_document(
     category: str = Form(...),
     valid_from: Optional[str] = Form(None),
     valid_until: Optional[str] = Form(None),
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """
@@ -50,7 +50,6 @@ async def upload_document(
 
     result = await knowledge_service.ingest_document(
         db=db,
-        tenant_id=tenant_id,
         file_bytes=file_bytes,
         filename=file.filename,
         category=category,
@@ -68,13 +67,12 @@ async def list_documents(
     category: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """List all indexed documents for this tenant. Filter by category."""
     result = await knowledge_service.list_documents(
         db=db,
-        tenant_id=tenant_id,
         category=category,
         page=page,
         page_size=page_size,
@@ -87,13 +85,12 @@ async def list_documents(
 @router.delete("/{doc_id}", status_code=200)
 async def delete_document(
     doc_id: uuid.UUID,
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """Delete document vectors from ChromaDB and mark as inactive in Postgres."""
     result = await knowledge_service.delete_document(
         db=db,
-        tenant_id=tenant_id,
         doc_id=doc_id,
     )
     return success_response(result)

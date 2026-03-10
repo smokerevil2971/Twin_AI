@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import io, csv
 
 from core.database import get_db
-from core.security import get_tenant_id
+from core.security import get_current_user
 from core.responses import success_response
 from core.config import settings
 from services.client_service import (
@@ -37,7 +37,7 @@ def _validate_upload(file: UploadFile) -> None:
 @router.post("/upload/preview")
 async def preview_upload(
     file: UploadFile = File(...),
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
 ):
     """Returns detected columns and suggested mapping. No data written to DB."""
     _validate_upload(file)
@@ -70,7 +70,7 @@ async def upload_clients(
     email_col: Optional[str] = Query(None, alias="email_col"),
     set_opted_in: bool = Query(False),
     opt_in_confirmed: bool = Query(False),
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -95,7 +95,6 @@ async def upload_clients(
     mapping = {"name": name_col, "phone": phone_col, "email": email_col}
     summary = await import_clients(
         db=db,
-        tenant_id=uuid.UUID(tenant_id),
         content=content,
         filename=file.filename,
         column_mapping=mapping,
@@ -109,7 +108,7 @@ async def upload_clients(
 @router.post("/upload/skipped-export")
 async def export_skipped(
     skipped: list[dict],
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
 ):
     """Accepts the skipped_records list from an import response and returns it as CSV."""
     output = io.StringIO()
@@ -133,12 +132,11 @@ async def get_clients(
     page_size: int = Query(25, ge=1, le=100),
     opted_in: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, min_length=1),
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     data = await list_clients(
         db=db,
-        tenant_id=uuid.UUID(tenant_id),
         page=page,
         page_size=page_size,
         opted_in=opted_in,
@@ -160,10 +158,10 @@ class UpdateClientRequest(BaseModel):
 async def patch_client(
     client_id: uuid.UUID,
     body: UpdateClientRequest,
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    client = await get_client_or_404(db, uuid.UUID(tenant_id), client_id)
+    client = await get_client_or_404(db, client_id)
     updated = await update_client(db, client, body.model_dump(exclude_none=True))
     from services.client_service import _client_dict
     return success_response(_client_dict(updated))
@@ -174,10 +172,10 @@ async def patch_client(
 @router.delete("/{client_id}", status_code=204)
 async def delete_client(
     client_id: uuid.UUID,
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    client = await get_client_or_404(db, uuid.UUID(tenant_id), client_id)
+    client = await get_client_or_404(db, client_id)
     await soft_delete_client(db, client)
 
 
@@ -190,7 +188,7 @@ class BulkOptInRequest(BaseModel):
 @router.post("/bulk-opt-in")
 async def bulk_opt_in_route(
     body: BulkOptInRequest,
-    tenant_id: str = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -203,5 +201,5 @@ async def bulk_opt_in_route(
             400,
             "confirmed must be true. Owner must confirm all clients have given WhatsApp consent."
         )
-    count = await bulk_opt_in(db, uuid.UUID(tenant_id))
+    count = await bulk_opt_in(db)
     return success_response({"opted_in_count": count})

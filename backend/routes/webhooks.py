@@ -1,7 +1,7 @@
 """
 Webhook routes — Phase 2.5 + 3.3
   POST /webhooks/gupshup/delivery      — inbound Gupshup delivery receipt (2.5)
-  POST /webhooks/whatsapp/{tenant_id}  — inbound WhatsApp message from client (3.3)
+  POST /webhooks/whatsapp            — inbound WhatsApp message from client (3.3)
 
 Security:
   - HMAC-SHA256 signature verified against X-Gupshup-Signature header
@@ -165,11 +165,10 @@ async def gupshup_delivery_webhook(
     return Response(status_code=200, content="ok")
 
 
-# ─── POST /webhooks/whatsapp/{tenant_id} ─────────────────────────────────────
+# ─── POST /webhooks/whatsapp ─────────────────────────────────────────────────
 
-@router.post("/whatsapp/{tenant_id}", status_code=200)
+@router.post("/whatsapp", status_code=200)
 async def whatsapp_inbound_webhook(
-    tenant_id: uuid.UUID,
     request: Request,
 ):
     """
@@ -201,7 +200,7 @@ async def whatsapp_inbound_webhook(
     adapter = get_gupshup_adapter()
     is_valid = await adapter.verify_webhook_signature(raw_body, signature)
     if not is_valid:
-        logger.warning(f"[WA WEBHOOK] Invalid HMAC for tenant={tenant_id}")
+        logger.warning("[WA WEBHOOK] Invalid HMAC — rejected")
         return Response(status_code=200, content="signature_invalid")
 
     # ── 3. Parse payload ──────────────────────────────────────────────────────
@@ -227,15 +226,14 @@ async def whatsapp_inbound_webhook(
         logger.info("[WA WEBHOOK] Missing phone or message — ignoring")
         return Response(status_code=200, content="ignored")
 
-    logger.info(f"[WA WEBHOOK] tenant={tenant_id} from={sender_phone} msg={message_text[:60]}")
+    logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]}")
 
-    # ── 4. Look up Client by (phone, tenant_id) ───────────────────────────────
+    # ── 4. Look up Client by phone ───────────────────────────────────────────
     client_id = None
     async for db in get_db():
         result = await db.execute(
             select(Client).where(
                 Client.phone == sender_phone,
-                Client.tenant_id == tenant_id,
                 Client.is_deleted == False,
             )
         )
@@ -245,7 +243,6 @@ async def whatsapp_inbound_webhook(
 
         # ── 5. Run the RAG bot inline (async, no Celery) ─────────────────────
         await run_bot(
-            tenant_id=str(tenant_id),
             phone=sender_phone,
             raw_message=message_text,
             client_id=client_id,

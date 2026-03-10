@@ -1,5 +1,4 @@
 import logging
-import sentry_sdk
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,14 +11,6 @@ from routes.clients import router as clients_router
 from routes.broadcasts import router as broadcasts_router
 from routes.webhooks import router as webhooks_router
 from routes.knowledge_base import router as knowledge_router
-from routes.analytics import router as analytics_router
-from routes.products import router as products_router
-from routes.offers import router as offers_router
-from routes.orders import router as orders_router
-
-# ─── Sentry ───────────────────────────────────────────────────────────────────
-if settings.sentry_dsn:
-    sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.2)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -29,8 +20,8 @@ logging.basicConfig(
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Twin AI — Client Communication Agent",
-    version="0.1.0",
+    title="Twin AI — Two-Bot System",
+    version="2.0.0",
     docs_url="/docs" if settings.app_env == "development" else None,
     redoc_url=None,
 )
@@ -59,7 +50,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         },
     )
 
-
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
     return JSONResponse(
@@ -70,7 +60,6 @@ async def not_found_handler(request: Request, exc):
             "error": {"message": f"Route {request.url.path} not found"},
         },
     )
-
 
 @app.exception_handler(500)
 async def server_error_handler(request: Request, exc):
@@ -83,17 +72,14 @@ async def server_error_handler(request: Request, exc):
         },
     )
 
+# ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(clients_router)
 app.include_router(broadcasts_router)
 app.include_router(webhooks_router)
 app.include_router(knowledge_router)
-app.include_router(analytics_router)
-app.include_router(products_router)
-app.include_router(offers_router)
-app.include_router(orders_router)
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
 async def health():
-    return {"status": "ok", "version": "0.1.0", "env": settings.app_env}
+    return {"status": "ok", "version": "2.0.0", "env": settings.app_env}

@@ -1,6 +1,7 @@
 """
-Client service — handles CSV/XLSX parsing, phone validation,
+Client service — CSV/XLSX parsing, phone validation,
 bulk insert with deduplication, and CRUD operations.
+Multi-tenancy removed — single owner system.
 """
 import io
 import re
@@ -8,28 +9,22 @@ import uuid
 from typing import Optional
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models.models import Client
-
-
-# ─── Phone validation ─────────────────────────────────────────────────────────
 
 _PHONE_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
 
 
 def normalise_phone(raw: str) -> str | None:
-    """Strip spaces/dashes, add +91 if bare 10-digit Indian number."""
     cleaned = re.sub(r"[\s\-().]+", "", str(raw).strip())
-    if re.match(r"^[6-9]\d{9}$", cleaned):          # bare Indian mobile
+    if re.match(r"^[6-9]\d{9}$", cleaned):
         cleaned = "+91" + cleaned
-    elif re.match(r"^91[6-9]\d{9}$", cleaned):       # 91XXXXXXXXXX
+    elif re.match(r"^91[6-9]\d{9}$", cleaned):
         cleaned = "+" + cleaned
     return cleaned if _PHONE_RE.match(cleaned) else None
 
-
-# ─── Column auto-detection ────────────────────────────────────────────────────
 
 _ALIAS = {
     "name":  {"name", "client name", "customer name", "full name", "contact name"},
@@ -39,7 +34,6 @@ _ALIAS = {
 
 
 def detect_column_mapping(columns: list[str]) -> dict[str, str | None]:
-    """Returns {'name': col_name, 'phone': col_name, 'email': col_name | None}."""
     lower_map = {c.lower().strip(): c for c in columns}
     result: dict[str, str | None] = {"name": None, "phone": None, "email": None}
     for field, aliases in _ALIAS.items():
@@ -50,10 +44,7 @@ def detect_column_mapping(columns: list[str]) -> dict[str, str | None]:
     return result
 
 
-# ─── File parsing ─────────────────────────────────────────────────────────────
-
 def parse_upload_file(content: bytes, filename: str) -> pd.DataFrame:
-    """Parse CSV or XLSX into a DataFrame. Raises ValueError on unsupported type."""
     fname = filename.lower()
     if fname.endswith(".csv"):
         return pd.read_csv(io.BytesIO(content), dtype=str).fillna("")
@@ -62,10 +53,7 @@ def parse_upload_file(content: bytes, filename: str) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {filename}. Use .csv or .xlsx only.")
 
 
-# ─── Preview (column mapping only, no DB write) ───────────────────────────────
-
 def get_upload_preview(content: bytes, filename: str) -> dict:
-    """Return column mapping preview without writing to DB."""
     df = parse_upload_file(content, filename)
     mapping = detect_column_mapping(list(df.columns))
     return {
@@ -76,23 +64,15 @@ def get_upload_preview(content: bytes, filename: str) -> dict:
     }
 
 
-# ─── Bulk import ──────────────────────────────────────────────────────────────
-
 async def import_clients(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     content: bytes,
     filename: str,
-    column_mapping: dict[str, str],  # {"name": "col", "phone": "col", "email": "col|None"}
+    column_mapping: dict[str, str],
     set_opted_in: bool = False,
 ) -> dict:
-    """
-    Parse file, validate rows, bulk insert valid clients.
-    Returns summary: imported, skipped_duplicates, skipped_invalid, skipped_records.
-    """
     df = parse_upload_file(content, filename)
 
-    # Apply column mapping
     name_col = column_mapping.get("name")
     phone_col = column_mapping.get("phone")
     email_col = column_mapping.get("email")
@@ -124,7 +104,6 @@ async def import_clients(
         seen_in_file.add(phone)
         valid_rows.append({
             "id": uuid.uuid4(),
-            "tenant_id": tenant_id,
             "name": name,
             "phone": phone,
             "email": email or None,
@@ -139,11 +118,10 @@ async def import_clients(
             "skipped_records": skipped_invalid + skipped_duplicates,
         }
 
-    # Bulk upsert — skip rows with existing (tenant_id, phone) — PostgreSQL ON CONFLICT DO NOTHING
     stmt = (
         pg_insert(Client)
         .values(valid_rows)
-        .on_conflict_do_nothing(constraint="uq_tenant_phone")
+        .on_conflict_do_nothing(constraint="uq_phone")
     )
     result = await db.execute(stmt)
     await db.commit()
@@ -162,31 +140,28 @@ async def import_clients(
     }
 
 
-# ─── CRUD helpers ─────────────────────────────────────────────────────────────
-
 async def list_clients(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     page: int = 1,
     page_size: int = 25,
     opted_in: Optional[bool] = None,
     search: Optional[str] = None,
 ) -> dict:
-    q = select(Client).where(
-        Client.tenant_id == tenant_id,
-        Client.is_deleted == False,
-    )
+    q = select(Client).where(Client.is_deleted == False)
     if opted_in is not None:
         q = q.where(Client.opted_in == opted_in)
     if search:
         term = f"%{search}%"
         q = q.where(or_(Client.name.ilike(term), Client.phone.ilike(term)))
 
-    total_q = select(func.count()).select_from(q.subquery())
-    total = (await db.execute(total_q)).scalar_one()
-
-    q = q.order_by(Client.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    rows = (await db.execute(q)).scalars().all()
+    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
+    rows = (
+        await db.execute(
+            q.order_by(Client.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
 
     return {
         "clients": [_client_dict(c) for c in rows],
@@ -197,12 +172,11 @@ async def list_clients(
     }
 
 
-async def get_client_or_404(db: AsyncSession, tenant_id: uuid.UUID, client_id: uuid.UUID) -> Client:
+async def get_client_or_404(db: AsyncSession, client_id: uuid.UUID) -> Client:
     from fastapi import HTTPException
     result = await db.execute(
         select(Client).where(
             Client.id == client_id,
-            Client.tenant_id == tenant_id,
             Client.is_deleted == False,
         )
     )
@@ -226,12 +200,10 @@ async def soft_delete_client(db: AsyncSession, client: Client) -> None:
     await db.commit()
 
 
-async def bulk_opt_in(db: AsyncSession, tenant_id: uuid.UUID) -> int:
-    """Set opted_in=True for all non-deleted clients of this tenant. Returns count updated."""
-    from sqlalchemy import update
+async def bulk_opt_in(db: AsyncSession) -> int:
     result = await db.execute(
         update(Client)
-        .where(Client.tenant_id == tenant_id, Client.is_deleted == False)
+        .where(Client.is_deleted == False)
         .values(opted_in=True)
     )
     await db.commit()

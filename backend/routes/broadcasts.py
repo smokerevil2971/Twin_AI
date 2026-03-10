@@ -7,18 +7,16 @@ Broadcast routes — Phase 2.2
   GET    /broadcasts/{id}/stream — SSE real-time delivery events (Phase 2.3)
 """
 import uuid
-import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Optional, AsyncGenerator
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Response
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from core.database import get_db
-from core.security import get_tenant_id
+from core.security import get_current_user
 from core.responses import success_response, error_response
 from models.models import BroadcastRecipient, Broadcast
 from services import broadcast_service
@@ -43,7 +41,7 @@ class CreateBroadcastRequest(BaseModel):
 @router.post("", status_code=201)
 async def create_broadcast(
     body: CreateBroadcastRequest,
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """
@@ -55,7 +53,6 @@ async def create_broadcast(
     """
     result = await broadcast_service.create_broadcast(
         db=db,
-        tenant_id=tenant_id,
         name=body.name,
         message_template=body.message_template,
         channel=body.channel,
@@ -83,11 +80,11 @@ async def create_broadcast(
 async def list_broadcasts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Paginated list of all broadcasts for this tenant."""
-    result = await broadcast_service.list_broadcasts(db, tenant_id, page, page_size)
+    """Paginated list of all broadcasts."""
+    result = await broadcast_service.list_broadcasts(db, page, page_size)
     return success_response(result)
 
 
@@ -96,11 +93,11 @@ async def list_broadcasts(
 @router.get("/{broadcast_id}")
 async def get_broadcast(
     broadcast_id: uuid.UUID,
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """Full broadcast detail with per-client delivery stats."""
-    result = await broadcast_service.get_broadcast_detail(db, tenant_id, broadcast_id)
+    result = await broadcast_service.get_broadcast_detail(db, broadcast_id)
     return success_response(result)
 
 
@@ -109,80 +106,15 @@ async def get_broadcast(
 @router.get("/{broadcast_id}/export")
 async def export_broadcast(
     broadcast_id: uuid.UUID,
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     """Download per-client delivery report as CSV."""
-    csv_content = await broadcast_service.export_broadcast_csv(db, tenant_id, broadcast_id)
+    csv_content = await broadcast_service.export_broadcast_csv(db, broadcast_id)
     return Response(
         content=csv_content,
         media_type="text/csv",
         headers={
             "Content-Disposition": f"attachment; filename=broadcast_{broadcast_id}_report.csv"
-        }
-    )
-
-
-# ─── GET /broadcasts/{id}/stream  (SSE — Phase 2.3) ──────────────────────────
-
-@router.get("/{broadcast_id}/stream")
-async def stream_broadcast_status(
-    broadcast_id: uuid.UUID,
-    token: str | None = None,          # EventSource can't send headers; accept ?token=...
-    tenant_id: uuid.UUID = Depends(get_tenant_id),
-    db=Depends(get_db),
-):
-    """
-    Server-Sent Events stream — emits delivery status updates in real-time.
-    Frontend subscribes on mount; events fire as webhook callbacks update DB.
-    Falls back to 10-second polling if SSE connection drops.
-    """
-    async def event_generator() -> AsyncGenerator[str, None]:
-        last_counts = {}
-        while True:
-            try:
-                # Fetch current per-status counts
-                rows = (
-                    await db.execute(
-                        select(
-                            BroadcastRecipient.status,
-                        )
-                        .where(BroadcastRecipient.broadcast_id == broadcast_id)
-                    )
-                ).scalars().all()
-
-                counts = {"pending": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
-                for status in rows:
-                    counts[status] = counts.get(status, 0) + 1
-
-                # Only emit if something changed
-                if counts != last_counts:
-                    last_counts = counts
-                    data = json.dumps({
-                        "broadcast_id": str(broadcast_id),
-                        "stats": counts,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
-                    yield f"data: {data}\n\n"
-
-                # Check if broadcast is complete — close stream
-                broadcast = await db.get(Broadcast, broadcast_id)
-                if broadcast and broadcast.status in ("sent", "failed"):
-                    yield f"data: {json.dumps({'event': 'complete', 'stats': counts})}\n\n"
-                    break
-
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                break
-
-            await asyncio.sleep(3)  # Poll DB every 3 seconds
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
         }
     )

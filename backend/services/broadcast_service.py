@@ -1,5 +1,6 @@
 """
 Broadcast service — CRUD, eligibility checks, personalisation, delivery stats.
+Multi-tenancy removed — single owner system.
 """
 import uuid
 import csv
@@ -10,16 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from fastapi import HTTPException
 
-from models.models import (
-    Broadcast, BroadcastRecipient, Client
-)
+from models.models import Broadcast, BroadcastRecipient, Client
 
 
 def utcnow():
     return datetime.now(timezone.utc)
 
-
-# ─── Personalisation ──────────────────────────────────────────────────────────
 
 def personalise(template: str, client: Client) -> str:
     """Replace {{name}}, {{1}} etc. with client fields."""
@@ -31,22 +28,17 @@ def personalise(template: str, client: Client) -> str:
     )
 
 
-# ─── Eligibility check ────────────────────────────────────────────────────────
-
 async def get_eligible_clients(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     client_ids: Optional[list[uuid.UUID]] = None,
 ) -> list[Client]:
     """
     Returns clients that are:
     - opted_in = True
     - not soft-deleted
-    - not messaged in the last 24 hours (no sent/delivered recipient row)
-    - optionally filtered to a specific list of client_ids
+    - not messaged in the last 24 hours
     """
     q = select(Client).where(
-        Client.tenant_id == tenant_id,
         Client.opted_in == True,
         Client.is_deleted == False,
     )
@@ -71,11 +63,8 @@ async def get_eligible_clients(
     return [c for c in clients if c.id not in recently_messaged]
 
 
-# ─── Create broadcast ─────────────────────────────────────────────────────────
-
 async def create_broadcast(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     name: str,
     message_template: str,
     channel: str = "whatsapp",
@@ -83,11 +72,7 @@ async def create_broadcast(
     scheduled_at: Optional[datetime] = None,
     target_client_ids: Optional[list[uuid.UUID]] = None,
 ) -> dict:
-    """
-    Creates broadcast + recipient rows for all eligible clients.
-    Returns broadcast dict with eligible_count.
-    """
-    eligible = await get_eligible_clients(db, tenant_id, target_client_ids)
+    eligible = await get_eligible_clients(db, target_client_ids)
 
     if not eligible:
         raise HTTPException(
@@ -97,7 +82,6 @@ async def create_broadcast(
         )
 
     broadcast = Broadcast(
-        tenant_id=tenant_id,
         name=name,
         message_template=message_template,
         channel=channel,
@@ -106,7 +90,7 @@ async def create_broadcast(
         scheduled_at=scheduled_at,
     )
     db.add(broadcast)
-    await db.flush()  # get broadcast.id before adding recipients
+    await db.flush()
 
     recipients = [
         BroadcastRecipient(
@@ -127,15 +111,12 @@ async def create_broadcast(
     }
 
 
-# ─── List broadcasts ──────────────────────────────────────────────────────────
-
 async def list_broadcasts(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
-    q = select(Broadcast).where(Broadcast.tenant_id == tenant_id)
+    q = select(Broadcast)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows = (
         await db.execute(
@@ -154,14 +135,11 @@ async def list_broadcasts(
     }
 
 
-# ─── Get broadcast detail + per-client stats ──────────────────────────────────
-
 async def get_broadcast_detail(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     broadcast_id: uuid.UUID,
 ) -> dict:
-    b = await _get_or_404(db, tenant_id, broadcast_id)
+    b = await _get_or_404(db, broadcast_id)
 
     recipients_q = (
         select(BroadcastRecipient, Client.name, Client.phone)
@@ -170,7 +148,6 @@ async def get_broadcast_detail(
     )
     rows = (await db.execute(recipients_q)).all()
 
-    # Aggregate counts
     counts = {"pending": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
     recipients_out = []
     for r, name, phone in rows:
@@ -196,15 +173,11 @@ async def get_broadcast_detail(
     }
 
 
-# ─── Export delivery report as CSV ────────────────────────────────────────────
-
 async def export_broadcast_csv(
     db: AsyncSession,
-    tenant_id: uuid.UUID,
     broadcast_id: uuid.UUID,
 ) -> str:
-    """Returns CSV string of per-client delivery report."""
-    await _get_or_404(db, tenant_id, broadcast_id)
+    await _get_or_404(db, broadcast_id)
 
     rows_q = (
         select(BroadcastRecipient, Client.name, Client.phone)
@@ -216,7 +189,8 @@ async def export_broadcast_csv(
     output = io.StringIO()
     writer = csv.DictWriter(
         output,
-        fieldnames=["client_name", "phone", "status", "sent_at", "delivered_at", "read_at", "failed_reason", "retry_count"]
+        fieldnames=["client_name", "phone", "status", "sent_at",
+                    "delivered_at", "read_at", "failed_reason", "retry_count"]
     )
     writer.writeheader()
     for r, name, phone in rows:
@@ -233,14 +207,9 @@ async def export_broadcast_csv(
     return output.getvalue()
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async def _get_or_404(db: AsyncSession, tenant_id: uuid.UUID, broadcast_id: uuid.UUID) -> Broadcast:
+async def _get_or_404(db: AsyncSession, broadcast_id: uuid.UUID) -> Broadcast:
     result = await db.execute(
-        select(Broadcast).where(
-            Broadcast.id == broadcast_id,
-            Broadcast.tenant_id == tenant_id,
-        )
+        select(Broadcast).where(Broadcast.id == broadcast_id)
     )
     b = result.scalar_one_or_none()
     if not b:

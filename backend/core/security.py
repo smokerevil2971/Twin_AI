@@ -42,20 +42,7 @@ def decode_token(token: str) -> dict[str, Any]:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict[str, Any]:
-    """FastAPI dependency — decodes JWT and returns payload."""
-    return decode_token(credentials.credentials)
-
-
-async def get_tenant_id(
-    current_user: dict = Depends(get_current_user),
-) -> str:
-    """FastAPI dependency — extracts tenant_id from token.
-    NEVER accept tenant_id from request body or query params — only from JWT.
+    """FastAPI dependency — decodes JWT and returns payload.
+    Use this on any route that requires the owner to be logged in.
     """
-    tenant_id = current_user.get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Token does not contain tenant_id",
-        )
-    return tenant_id
+    return decode_token(credentials.credentials)
