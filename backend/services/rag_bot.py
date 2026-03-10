@@ -12,7 +12,7 @@ import re
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import TypedDict, Optional
+from typing import Any, TypedDict, Optional
 
 import google.generativeai as genai
 from langgraph.graph import StateGraph, END
@@ -71,6 +71,7 @@ class BotState(TypedDict):
     flagged: bool
     fallback_reason: str   # "" | "rate_limit" | "injection" | "no_context"
     done: bool
+    _db: Any               # AsyncSession — passed through graph, not modified
 
 
 # ─── Nodes ────────────────────────────────────────────────────────────────────
