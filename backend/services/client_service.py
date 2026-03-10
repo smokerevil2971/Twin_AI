@@ -6,6 +6,7 @@ Multi-tenancy removed — single owner system.
 import io
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,12 +103,17 @@ async def import_clients(
             continue
 
         seen_in_file.add(phone)
+        now = datetime.now(timezone.utc)
         valid_rows.append({
             "id": uuid.uuid4(),
             "name": name,
             "phone": phone,
             "email": email or None,
             "opted_in": set_opted_in,
+            "language": "en",
+            "is_deleted": False,
+            "created_at": now,
+            "updated_at": now,
         })
 
     if not valid_rows:
@@ -121,7 +127,7 @@ async def import_clients(
     stmt = (
         pg_insert(Client)
         .values(valid_rows)
-        .on_conflict_do_nothing(constraint="uq_phone")
+        .on_conflict_do_nothing(constraint="uq_client_phone")
     )
     result = await db.execute(stmt)
     await db.commit()

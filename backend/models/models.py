@@ -37,7 +37,7 @@ class Owner(Base):
 class Client(Base):
     __tablename__ = "clients"
     __table_args__ = (
-        UniqueConstraint("phone", name="uq_phone"),
+        UniqueConstraint("phone", name="uq_client_phone"),
         Index("ix_clients_phone", "phone"),
         Index("ix_clients_opted_in", "opted_in"),
     )
