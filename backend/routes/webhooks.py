@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, Response
 from sqlalchemy import select, update, func
 
-from core.database import get_db
+from core.database import get_db, get_db_context
 from core.config import settings
 from models.models import BroadcastRecipient, Broadcast, Client
 from services.gupshup_adapter import get_gupshup_adapter
@@ -172,65 +172,59 @@ async def whatsapp_inbound_webhook(
     request: Request,
 ):
     """
-    Inbound WhatsApp message from a client via Gupshup.
-    Endpoint is tenant-specific: each tenant's Gupshup app points here.
-
-    Gupshup inbound payload format:
-    {
-      "app": "TwinAI",
-      "timestamp": 1234567890,
-      "version": 2,
-      "type": "message",
-      "payload": {
-        "id": "<msg-id>",
-        "source": "+919876543210",
-        "type": "text",
-        "payload": { "text": "What earbuds do you sell?" },
-        "sender": { "phone": "+919876543210", "name": "Customer" }
-      }
-    }
-
-    Always returns 200 — run_bot() is awaited inline (no Celery, target < 3s).
+    Inbound WhatsApp message.
+    Supports both Twilio (form-encoded) and Gupshup (JSON) payloads.
+    Always returns 200 — run_bot() is awaited inline.
     """
-    # ── 1. Read raw body early (needed for HMAC before JSON parse) ────────────
-    raw_body = await request.body()
-    signature = request.headers.get("X-Gupshup-Signature", "")
+    from core.config import settings as app_settings
 
-    # ── 2. Verify HMAC ────────────────────────────────────────────────────────
-    adapter = get_gupshup_adapter()
-    is_valid = await adapter.verify_webhook_signature(raw_body, signature)
-    if not is_valid:
-        logger.warning("[WA WEBHOOK] Invalid HMAC — rejected")
-        return Response(status_code=200, content="signature_invalid")
-
-    # ── 3. Parse payload ──────────────────────────────────────────────────────
+    # ── Parse inbound message (Twilio or Gupshup) ─────────────────────────
     try:
-        data = await request.json()
-    except Exception:
-        logger.warning("[WA WEBHOOK] Malformed JSON")
-        return Response(status_code=200, content="malformed_json")
+        if app_settings.messaging_provider == "twilio":
+            # Twilio sends form-encoded body
+            form = await request.form()
+            sender_phone = str(form.get("From", "")).replace("whatsapp:", "")
+            message_text = str(form.get("Body", "")).strip()
+        else:
+            # Gupshup sends JSON body
+            # Read raw body first (kept for potential future HMAC check)
+            raw_body = await request.body()
+            signature = request.headers.get("X-Gupshup-Signature", "")
+            if signature:
+                adapter = get_gupshup_adapter()
+                is_valid = await adapter.verify_webhook_signature(raw_body, signature)
+                if not is_valid:
+                    logger.warning("[WA WEBHOOK] Invalid HMAC — rejected")
+                    return Response(status_code=200, content="signature_invalid")
+            else:
+                logger.warning("[WA WEBHOOK] No X-Gupshup-Signature — proceeding without HMAC check")
 
-    payload = data.get("payload", {})
-    msg_type = data.get("type", "")
+            body = await request.json()
+            payload = body.get("payload", {})
+            msg_type = body.get("type", "")
 
-    # Only handle inbound text messages
-    if msg_type != "message":
-        logger.info(f"[WA WEBHOOK] Ignored non-message event type: {msg_type}")
-        return Response(status_code=200, content="ignored")
+            if msg_type != "message":
+                logger.info(f"[WA WEBHOOK] Ignored non-message event: {msg_type}")
+                return Response(status_code=200, content="ignored")
 
-    sender_phone = payload.get("source") or payload.get("sender", {}).get("phone")
-    inner = payload.get("payload", {})
-    message_text = inner.get("text") or inner.get("message", "")
+            sender_phone = (
+                payload.get("source")
+                or payload.get("sender", {}).get("phone", "")
+            )
+            inner = payload.get("payload", {})
+            message_text = inner.get("text") or inner.get("message", "")
+    except Exception as exc:
+        logger.warning(f"[WA WEBHOOK] Failed to parse body: {exc}")
+        return Response(status_code=200, content="ok")
 
     if not sender_phone or not message_text:
-        logger.info("[WA WEBHOOK] Missing phone or message — ignoring")
+        logger.warning("[WA WEBHOOK] Missing phone or message — ignored")
         return Response(status_code=200, content="ignored")
 
     logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]}")
 
-    # ── 4. Look up Client by phone ───────────────────────────────────────────
-    client_id = None
-    async for db in get_db():
+    # ── Look up client + run bot ──────────────────────────────────────────
+    async with get_db_context() as db:
         result = await db.execute(
             select(Client).where(
                 Client.phone == sender_phone,
@@ -238,10 +232,8 @@ async def whatsapp_inbound_webhook(
             )
         )
         client = result.scalar_one_or_none()
-        if client:
-            client_id = str(client.id)
+        client_id = str(client.id) if client else None
 
-        # ── 5. Run the RAG bot inline (async, no Celery) ─────────────────────
         await run_bot(
             phone=sender_phone,
             raw_message=message_text,

@@ -310,17 +310,12 @@ def build_rag_graph():
 _rag_graph = build_rag_graph()
 
 
-# ─── Gupshup adapter helper ───────────────────────────────────────────────────
+# ─── Messaging adapter helper ─────────────────────────────────────────────────
 
 def _get_adapter():
-    if settings.gupshup_mode == "real":
-        return RealGupshupAdapter(
-            api_key=settings.gupshup_api_key,
-            app_name=settings.gupshup_app_name,
-            sender=settings.gupshup_sender_number,
-            webhook_secret=settings.gupshup_webhook_secret,
-        )
-    return MockGupshupAdapter()
+    """Returns the correct messaging adapter based on MESSAGING_PROVIDER env var."""
+    from services.gupshup_adapter import get_messaging_adapter
+    return get_messaging_adapter()
 
 
 # ─── Public entrypoint ────────────────────────────────────────────────────────

@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     gupshup_sender_number: str = ""
     gupshup_webhook_secret: str = ""
 
+    # Messaging provider selector
+    messaging_provider: str = "gupshup"   # "gupshup" | "twilio"
+
+    # Twilio
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_number: str = ""
+    twilio_skip_sig_validation: str = "true"
+
     # SendGrid
     sendgrid_api_key: str = ""
     alert_email_from: str = ""

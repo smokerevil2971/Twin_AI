@@ -78,9 +78,23 @@ class RealGupshupAdapter(GupshupAdapter):
         return hmac.compare_digest(expected, signature)
 
 
-def get_gupshup_adapter() -> GupshupAdapter:
-    """FastAPI dependency — returns mock or real adapter based on GUPSHUP_MODE env var."""
+def get_messaging_adapter() -> GupshupAdapter:
+    """
+    FastAPI dependency — returns the correct messaging
+    adapter based on MESSAGING_PROVIDER env var.
+
+    MESSAGING_PROVIDER=twilio  → TwilioAdapter
+    MESSAGING_PROVIDER=gupshup + GUPSHUP_MODE=real → RealGupshupAdapter
+    MESSAGING_PROVIDER=gupshup + GUPSHUP_MODE=mock → MockGupshupAdapter
+    """
     from core.config import settings
+    if settings.messaging_provider == "twilio":
+        from services.twilio_adapter import TwilioAdapter
+        return TwilioAdapter(
+            account_sid=settings.twilio_account_sid,
+            auth_token=settings.twilio_auth_token,
+            from_number=settings.twilio_whatsapp_number,
+        )
     if settings.gupshup_mode == "real":
         return RealGupshupAdapter(
             api_key=settings.gupshup_api_key,
@@ -89,3 +103,7 @@ def get_gupshup_adapter() -> GupshupAdapter:
             webhook_secret=settings.gupshup_webhook_secret,
         )
     return MockGupshupAdapter()
+
+
+# Keep old name as alias so nothing breaks
+get_gupshup_adapter = get_messaging_adapter
