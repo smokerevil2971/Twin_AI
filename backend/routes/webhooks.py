@@ -22,6 +22,9 @@ from core.config import settings
 from models.models import BroadcastRecipient, Broadcast, Client
 from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
+from services.broadcast_service import create_broadcast
+from services.gupshup_adapter import get_messaging_adapter
+from tasks.broadcast_tasks import send_broadcast
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -223,7 +226,42 @@ async def whatsapp_inbound_webhook(
 
     logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]}")
 
-    # ── Look up client + run bot ──────────────────────────────────────────
+    # ── Owner broadcast trigger ───────────────────────────────────────────
+    if settings.owner_phone and sender_phone == settings.owner_phone:
+        logger.info(f"[BROADCAST] Owner message — creating broadcast: {message_text[:60]}")
+        async with get_db_context() as db:
+            try:
+                result = await create_broadcast(
+                    db=db,
+                    name=f"WhatsApp broadcast {message_text[:30]}",
+                    message_template=message_text,
+                    channel="whatsapp",
+                )
+                broadcast_id = result["id"]
+                eligible_count = result["eligible_count"]
+                # Dispatch Celery task to send to all eligible clients
+                send_broadcast.delay(broadcast_id)
+                # Confirm back to owner
+                adapter = get_messaging_adapter()
+                preview = message_text[:60] + ("..." if len(message_text) > 60 else "")
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=f"✅ Broadcast queued for {eligible_count} client(s):\n\"{preview}\"",
+                )
+                logger.info(f"[BROADCAST] Queued broadcast {broadcast_id} for {eligible_count} clients")
+            except Exception as exc:
+                logger.error(f"[BROADCAST] Failed to create broadcast: {exc}")
+                try:
+                    adapter = get_messaging_adapter()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"❌ Broadcast failed: {str(exc)[:100]}",
+                    )
+                except Exception:
+                    pass
+        return Response(status_code=200, content="ok")
+
+    # ── Regular client — RAG bot ──────────────────────────────────────────
     async with get_db_context() as db:
         result = await db.execute(
             select(Client).where(

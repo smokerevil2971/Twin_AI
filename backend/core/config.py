@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     twilio_whatsapp_number: str = ""
     twilio_skip_sig_validation: str = "true"
 
+    # Owner
+    owner_phone: str = ""   # e.g. +919075805070 — triggers broadcast when they WhatsApp the bot
+
     # SendGrid
     sendgrid_api_key: str = ""
     alert_email_from: str = ""

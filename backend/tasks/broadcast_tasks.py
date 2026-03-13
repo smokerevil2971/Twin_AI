@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 from core.celery_app import celery_app
 from core.database import get_async_sessionmaker
 from models.models import Broadcast, BroadcastRecipient, Client
-from services.gupshup_adapter import get_gupshup_adapter
+from services.gupshup_adapter import get_messaging_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def send_broadcast(self, broadcast_id: str):
 
 async def _send_broadcast_async(broadcast_id_str: str):
     broadcast_id = uuid.UUID(broadcast_id_str)
-    adapter = get_gupshup_adapter()
+    adapter = get_messaging_adapter()
     AsyncSessionLocal = get_async_sessionmaker()
 
     async with AsyncSessionLocal() as db:
