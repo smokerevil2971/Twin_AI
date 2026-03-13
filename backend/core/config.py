@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # Broadcast
     broadcast_cooldown_hours: int = 1   # hours between broadcasts to same client
+    broadcast_cooldown_enabled: bool = True   # set False during testing to skip cooldown
 
     # SendGrid
     sendgrid_api_key: str = ""

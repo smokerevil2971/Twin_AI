@@ -88,6 +88,9 @@ async def get_eligible_clients(
 
     clients = (await db.execute(q)).scalars().all()
 
+    if not settings.broadcast_cooldown_enabled:
+        return list(clients)
+
     # Filter out clients messaged within the cooldown window
     cutoff = utcnow() - timedelta(hours=settings.broadcast_cooldown_hours)
     recently_messaged_q = (
