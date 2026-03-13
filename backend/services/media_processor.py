@@ -83,7 +83,9 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
         mime_base = content_type.split(";")[0].strip()
 
         genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.llm_model)
+        # Strip 'models/' prefix — genai SDK adds it automatically
+        model_name = settings.llm_model.removeprefix("models/")
+        model = genai.GenerativeModel(model_name)
 
         caption_hint = f' The client added this caption: "{caption}".' if caption else ""
         prompt = (
@@ -164,7 +166,9 @@ async def _process_audio(media_url: str, content_type: str) -> str:
             mime_base = "audio/mpeg"
 
         genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.llm_model)
+        # Strip 'models/' prefix — genai SDK adds it automatically
+        model_name = settings.llm_model.removeprefix("models/")
+        model = genai.GenerativeModel(model_name)
 
         resp = model.generate_content([
             "Please transcribe this voice note exactly as spoken. "
@@ -182,8 +186,14 @@ async def _process_audio(media_url: str, content_type: str) -> str:
     except Exception as e:
         err_str = str(e)
         logger.error(f"[MEDIA] Audio processing failed: {err_str}")
-        # Detect Gemini quota / rate limit errors
-        if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
+        # Detect Gemini quota / rate limit errors specifically (avoid matching on '404 ...generateContent')
+        is_rate_limit = (
+            "429" in err_str
+            or "quota exceeded" in err_str.lower()
+            or "resource_exhausted" in err_str.lower()
+            or "rate_limit_exceeded" in err_str.lower()
+        )
+        if is_rate_limit:
             logger.warning("[MEDIA] Gemini quota hit during audio processing")
             return RATE_LIMITED_MSG
         return "[Client sent a voice note but it could not be processed]"
