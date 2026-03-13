@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Owner
     owner_phone: str = ""   # e.g. +919075805070 — triggers broadcast when they WhatsApp the bot
 
+    # Broadcast
+    broadcast_cooldown_hours: int = 1   # hours between broadcasts to same client
+
     # SendGrid
     sendgrid_api_key: str = ""
     alert_email_from: str = ""

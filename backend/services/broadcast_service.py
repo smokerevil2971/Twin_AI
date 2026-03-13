@@ -5,13 +5,18 @@ Multi-tenancy removed — single owner system.
 import uuid
 import csv
 import io
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from fastapi import HTTPException
+import google.generativeai as genai
 
+from core.config import settings
 from models.models import Broadcast, BroadcastRecipient, Client
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow():
@@ -26,6 +31,42 @@ def personalise(template: str, client: Client) -> str:
         .replace("{{1}}", client.name)
         .replace("{{phone}}", client.phone)
     )
+
+
+async def ai_personalise(owner_message: str, client: Client) -> str:
+    """
+    Use Gemini to generate a unique personalised message for each client
+    based on their name and preferred language.
+    Falls back to basic template substitution if Gemini fails.
+    """
+    lang_label = "Hindi" if client.language == "hi" else "English"
+    prompt = (
+        f"You are a WhatsApp sales assistant for a solar energy company.\n"
+        f"The business owner wants to send this message to a client:\n"
+        f'"{owner_message}"\n\n'
+        f"Client profile:\n"
+        f"- Name: {client.name}\n"
+        f"- Preferred language: {lang_label}\n\n"
+        f"Write a personalised WhatsApp message for this specific client:\n"
+        f"- Address them by name naturally\n"
+        f"- Write entirely in {lang_label}\n"
+        f"- Keep it 2-3 sentences, friendly and concise\n"
+        f"- Preserve the owner's core offer/information\n"
+        f"- Do NOT add subject lines or formal greetings like 'Dear'\n"
+        f"Respond with ONLY the message text, nothing else."
+    )
+    try:
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.llm_model)
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+        if text:
+            logger.info(f"[BROADCAST] AI personalised for {client.name} ({lang_label})")
+            return text
+    except Exception as e:
+        logger.warning(f"[BROADCAST] Gemini personalisation failed for {client.name}: {e}")
+    # Fallback: basic template substitution
+    return personalise(owner_message, client)
 
 
 async def get_eligible_clients(
@@ -47,8 +88,8 @@ async def get_eligible_clients(
 
     clients = (await db.execute(q)).scalars().all()
 
-    # Filter out clients messaged in the last 24h
-    cutoff = utcnow() - timedelta(hours=24)
+    # Filter out clients messaged within the cooldown window
+    cutoff = utcnow() - timedelta(hours=settings.broadcast_cooldown_hours)
     recently_messaged_q = (
         select(BroadcastRecipient.client_id)
         .where(
@@ -92,15 +133,16 @@ async def create_broadcast(
     db.add(broadcast)
     await db.flush()
 
-    recipients = [
-        BroadcastRecipient(
+    # Build recipients with AI-personalised messages
+    recipients = []
+    for c in eligible:
+        msg = await ai_personalise(message_template, c)
+        recipients.append(BroadcastRecipient(
             broadcast_id=broadcast.id,
             client_id=c.id,
-            personalised_message=personalise(message_template, c),
+            personalised_message=msg,
             status="pending",
-        )
-        for c in eligible
-    ]
+        ))
     db.add_all(recipients)
     await db.commit()
     await db.refresh(broadcast)
