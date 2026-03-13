@@ -26,7 +26,7 @@ from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
 from services.broadcast_service import create_broadcast
 from services.gupshup_adapter import get_messaging_adapter
-from services.media_processor import process_media, UNSUPPORTED_MSG
+from services.media_processor import process_media, UNSUPPORTED_MSG, RATE_LIMITED_MSG
 from tasks.broadcast_tasks import send_broadcast
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
@@ -340,9 +340,9 @@ async def whatsapp_inbound_webhook(
             content_type=media_type,
             caption=message_text,
         )
-        if processed == UNSUPPORTED_MSG:
+        if processed in (UNSUPPORTED_MSG, RATE_LIMITED_MSG):
             adapter = get_messaging_adapter()
-            await adapter.send_message(phone=sender_phone, message=UNSUPPORTED_MSG)
+            await adapter.send_message(phone=sender_phone, message=processed)
             return Response(status_code=200, content="ok")
         message_text = processed
 

@@ -24,10 +24,15 @@ UNSUPPORTED_MSG = (
     "Please send your query as text or one of these supported formats."
 )
 
+# Sentinel returned when Gemini quota is exceeded — webhook will reply directly
+RATE_LIMITED_MSG = (
+    "I'm temporarily busy processing requests. Please try again in a few minutes! ⏳"
+)
+
 
 async def download_media(url: str, account_sid: str, auth_token: str) -> bytes:
-    """Download Twilio media with Basic auth."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    """Download Twilio media with Basic auth. Follows redirects (Twilio CDN uses them for audio)."""
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         resp = await client.get(url, auth=(account_sid, auth_token))
         resp.raise_for_status()
         return resp.content
@@ -51,14 +56,16 @@ async def process_media(
     mime_base = content_type.split(";")[0].strip().lower()
 
     if mime_base in IMAGE_TYPES:
-        return await _process_image(media_url, content_type, caption)
+        result = await _process_image(media_url, content_type, caption)
     elif mime_base in PDF_TYPES:
-        return await _process_pdf(media_url)
-    elif mime_base in AUDIO_TYPES:
-        return await _process_audio(media_url, content_type)
+        result = await _process_pdf(media_url)
+    elif mime_base in AUDIO_TYPES or "audio" in mime_base:
+        result = await _process_audio(media_url, content_type)
     else:
         logger.warning(f"[MEDIA] Unsupported content type: {content_type}")
         return UNSUPPORTED_MSG
+
+    return result
 
 
 # ─── Handlers ────────────────────────────────────────────────────────────────
@@ -146,13 +153,15 @@ async def _process_audio(media_url: str, content_type: str) -> str:
             settings.twilio_account_sid,
             settings.twilio_auth_token,
         )
+        logger.info(f"[MEDIA] Audio downloaded: {len(raw)} bytes")
         b64 = base64.b64encode(raw).decode()
 
-        # Twilio WhatsApp voice notes come as audio/ogg
+        # Normalize MIME type — Gemini accepts audio/ogg
         mime_base = content_type.split(";")[0].strip()
-        # Gemini expects audio/ogg  
         if "ogg" in mime_base:
             mime_base = "audio/ogg"
+        elif "mpeg" in mime_base or "mp3" in mime_base:
+            mime_base = "audio/mpeg"
 
         genai.configure(api_key=settings.gemini_api_key)
         model = genai.GenerativeModel(settings.llm_model)
@@ -171,5 +180,10 @@ async def _process_audio(media_url: str, content_type: str) -> str:
         return transcript  # treat transcript as the message text directly
 
     except Exception as e:
-        logger.error(f"[MEDIA] Audio processing failed: {e}")
+        err_str = str(e)
+        logger.error(f"[MEDIA] Audio processing failed: {err_str}")
+        # Detect Gemini quota / rate limit errors
+        if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
+            logger.warning("[MEDIA] Gemini quota hit during audio processing")
+            return RATE_LIMITED_MSG
         return "[Client sent a voice note but it could not be processed]"
