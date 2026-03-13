@@ -11,8 +11,10 @@ Security:
 import hashlib
 import hmac
 import logging
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request, Response
 from sqlalchemy import select, update, func
@@ -228,6 +230,69 @@ async def whatsapp_inbound_webhook(
 
     # ── Owner broadcast trigger ───────────────────────────────────────────
     if settings.owner_phone and sender_phone == settings.owner_phone:
+        # Detect SCHEDULE: prefix — e.g. "SCHEDULE: 2026-03-14 18:00 Your message here"
+        schedule_match = re.match(
+            r"(?i)^schedule:\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(.+)$",
+            message_text.strip(),
+            re.DOTALL,
+        )
+        if schedule_match:
+            date_str, time_str, broadcast_msg = schedule_match.groups()
+            broadcast_msg = broadcast_msg.strip()
+            # Parse as IST and convert to UTC for Celery
+            IST = ZoneInfo("Asia/Kolkata")
+            try:
+                scheduled_dt_ist = datetime.strptime(
+                    f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=IST)
+                scheduled_dt_utc = scheduled_dt_ist.astimezone(timezone.utc)
+            except ValueError:
+                adapter = get_messaging_adapter()
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message="❌ Invalid format. Use:\nSCHEDULE: YYYY-MM-DD HH:MM Your message here",
+                )
+                return Response(status_code=200, content="ok")
+
+            logger.info(f"[BROADCAST] Scheduling broadcast for {scheduled_dt_ist}: {broadcast_msg[:40]}")
+            async with get_db_context() as db:
+                try:
+                    result = await create_broadcast(
+                        db=db,
+                        name=f"Scheduled {date_str} {time_str} — {broadcast_msg[:25]}",
+                        message_template=broadcast_msg,
+                        channel="whatsapp",
+                        scheduled_at=scheduled_dt_utc,
+                    )
+                    broadcast_id = result["id"]
+                    eligible_count = result["eligible_count"]
+                    # Dispatch Celery task at the scheduled UTC time
+                    send_broadcast.apply_async(args=[broadcast_id], eta=scheduled_dt_utc)
+                    # Format confirmation in IST
+                    display_time = scheduled_dt_ist.strftime("%d-%b-%Y at %-I:%M %p")
+                    adapter = get_messaging_adapter()
+                    preview = broadcast_msg[:60] + ("..." if len(broadcast_msg) > 60 else "")
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=(
+                            f"🕐 Broadcast scheduled for {display_time} "
+                            f"for {eligible_count} client(s).\n\"{preview}\""
+                        ),
+                    )
+                    logger.info(f"[BROADCAST] Scheduled broadcast {broadcast_id} for {display_time}")
+                except Exception as exc:
+                    logger.error(f"[BROADCAST] Failed to schedule: {exc}")
+                    try:
+                        adapter = get_messaging_adapter()
+                        await adapter.send_message(
+                            phone=sender_phone,
+                            message=f"❌ Scheduling failed: {str(exc)[:100]}",
+                        )
+                    except Exception:
+                        pass
+            return Response(status_code=200, content="ok")
+
+        # ── Immediate broadcast (no SCHEDULE: prefix) ─────────────────────
         logger.info(f"[BROADCAST] Owner message — creating broadcast: {message_text[:60]}")
         async with get_db_context() as db:
             try:
@@ -239,9 +304,7 @@ async def whatsapp_inbound_webhook(
                 )
                 broadcast_id = result["id"]
                 eligible_count = result["eligible_count"]
-                # Dispatch Celery task to send to all eligible clients
                 send_broadcast.delay(broadcast_id)
-                # Confirm back to owner
                 adapter = get_messaging_adapter()
                 preview = message_text[:60] + ("..." if len(message_text) > 60 else "")
                 await adapter.send_message(
