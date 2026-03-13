@@ -26,6 +26,7 @@ from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
 from services.broadcast_service import create_broadcast
 from services.gupshup_adapter import get_messaging_adapter
+from services.media_processor import process_media, UNSUPPORTED_MSG
 from tasks.broadcast_tasks import send_broadcast
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
@@ -184,12 +185,18 @@ async def whatsapp_inbound_webhook(
     from core.config import settings as app_settings
 
     # ── Parse inbound message (Twilio or Gupshup) ─────────────────────────
+    media_url = ""
+    media_type = ""
     try:
         if app_settings.messaging_provider == "twilio":
             # Twilio sends form-encoded body
             form = await request.form()
             sender_phone = str(form.get("From", "")).replace("whatsapp:", "")
             message_text = str(form.get("Body", "")).strip()
+            # Media attachments (images, PDFs, voice notes)
+            num_media = int(form.get("NumMedia", 0))
+            media_url = str(form.get("MediaUrl0", "")).strip() if num_media > 0 else ""
+            media_type = str(form.get("MediaContentType0", "")).strip() if num_media > 0 else ""
         else:
             # Gupshup sends JSON body
             # Read raw body first (kept for potential future HMAC check)
@@ -222,11 +229,11 @@ async def whatsapp_inbound_webhook(
         logger.warning(f"[WA WEBHOOK] Failed to parse body: {exc}")
         return Response(status_code=200, content="ok")
 
-    if not sender_phone or not message_text:
+    if not sender_phone or not (message_text or media_url):
         logger.warning("[WA WEBHOOK] Missing phone or message — ignored")
         return Response(status_code=200, content="ignored")
 
-    logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]}")
+    logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]} media={bool(media_url)}")
 
     # ── Owner broadcast trigger ───────────────────────────────────────────
     if settings.owner_phone and sender_phone == settings.owner_phone:
@@ -325,6 +332,23 @@ async def whatsapp_inbound_webhook(
         return Response(status_code=200, content="ok")
 
     # ── Regular client — RAG bot ──────────────────────────────────────────
+    # If media attached, convert to text first
+    if media_url and media_type:
+        logger.info(f"[MEDIA] Processing {media_type} from {sender_phone}")
+        processed = await process_media(
+            media_url=media_url,
+            content_type=media_type,
+            caption=message_text,
+        )
+        if processed == UNSUPPORTED_MSG:
+            adapter = get_messaging_adapter()
+            await adapter.send_message(phone=sender_phone, message=UNSUPPORTED_MSG)
+            return Response(status_code=200, content="ok")
+        message_text = processed
+
+    if not message_text:
+        return Response(status_code=200, content="ok")
+
     async with get_db_context() as db:
         result = await db.execute(
             select(Client).where(
