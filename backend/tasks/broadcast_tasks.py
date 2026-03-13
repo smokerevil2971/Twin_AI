@@ -12,6 +12,7 @@ from celery import shared_task
 from sqlalchemy import select, update
 
 from core.celery_app import celery_app
+from core.config import settings
 from core.database import get_async_sessionmaker
 from models.models import Broadcast, BroadcastRecipient, Client
 from services.gupshup_adapter import get_messaging_adapter
@@ -112,6 +113,23 @@ async def _send_broadcast_async(broadcast_id_str: str):
             f"Broadcast {broadcast_id_str} complete — "
             f"{sent}/{total} sent, {failed} failed"
         )
+
+        # Notify owner with delivery summary
+        if settings.owner_phone:
+            try:
+                if failed == 0:
+                    summary = f"✅ Broadcast delivered for {sent} client(s)."
+                else:
+                    summary = (
+                        f"📊 Broadcast complete — "
+                        f"{sent} sent, {failed} failed (out of {total})."
+                    )
+                await adapter.send_message(
+                    phone=settings.owner_phone,
+                    message=summary,
+                )
+            except Exception as e:
+                logger.warning(f"[BROADCAST] Could not notify owner: {e}")
 
 
 @celery_app.task(name="tasks.knowledge_tasks.deactivate_expired_offers")
