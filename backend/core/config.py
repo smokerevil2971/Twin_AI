@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     # Broadcast
     broadcast_cooldown_hours: int = 1   # hours between broadcasts to same client
     broadcast_cooldown_enabled: bool = True   # set False during testing to skip cooldown
+    flagged_digest_hours: int = 2   # how often to send flagged query digest (0 = disabled)
 
     # SendGrid
     sendgrid_api_key: str = ""

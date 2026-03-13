@@ -150,3 +150,71 @@ async def _deactivate_expired_offers_async():
         )
         await db.commit()
         logger.info(f"Deactivated {result.rowcount} expired offers")
+
+
+@celery_app.task(name="tasks.broadcast_tasks.send_flagged_digest")
+def send_flagged_digest():
+    """
+    Periodic beat task — queries all flagged+unalerted conversations and
+    sends ONE WhatsApp digest to the owner. Marks them alert_sent=True.
+    Skips silently if disabled (flagged_digest_hours=0) or no owner phone set.
+    """
+    if not settings.flagged_digest_hours or not settings.owner_phone:
+        return
+    asyncio.run(_send_flagged_digest_async())
+
+
+async def _send_flagged_digest_async():
+    from models.models import Conversation, Client
+    AsyncSessionLocal = get_async_sessionmaker()
+    adapter = get_messaging_adapter()
+
+    async with AsyncSessionLocal() as db:
+        # Fetch flagged conversations not yet alerted, with optional client info
+        q = (
+            select(Conversation, Client.name, Client.phone)
+            .outerjoin(Client, Conversation.client_id == Client.id)
+            .where(
+                Conversation.flagged == True,
+                Conversation.alert_sent == False,
+            )
+            .order_by(Conversation.created_at.desc())
+            .limit(20)   # cap at 20 to keep message readable
+        )
+        rows = (await db.execute(q)).all()
+
+        if not rows:
+            logger.info("[DIGEST] No unalerted flagged queries — skipping")
+            return
+
+        total = len(rows)
+        lines = [f"\u2753 {total} unanswered quer{'y' if total==1 else 'ies'} — please follow up:\n"]
+        ids_to_mark = []
+
+        for conv, client_name, client_phone in rows:
+            name_str = client_name or "Unknown"
+            phone_str = client_phone or conv.client_id or "?"
+            question = (conv.message or "")[:120]
+            lines.append(f"\u2022 {name_str} ({phone_str})\n  \"{question}\"")
+            ids_to_mark.append(conv.id)
+
+        digest_msg = "\n\n".join(lines)
+
+        try:
+            await adapter.send_message(
+                phone=settings.owner_phone,
+                message=digest_msg,
+            )
+            logger.info(f"[DIGEST] Sent digest with {total} flagged queries to owner")
+        except Exception as e:
+            logger.error(f"[DIGEST] Failed to send digest: {e}")
+            return
+
+        # Mark all included conversations as alert_sent
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id.in_(ids_to_mark))
+            .values(alert_sent=True)
+        )
+        await db.commit()
+        logger.info(f"[DIGEST] Marked {len(ids_to_mark)} conversations as alert_sent")

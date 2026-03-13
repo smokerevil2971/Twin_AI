@@ -24,5 +24,9 @@ celery_app.conf.update(
             "task": "tasks.knowledge_tasks.deactivate_expired_offers",
             "schedule": 86400.0,  # daily
         },
+        "send-flagged-digest": {
+            "task": "tasks.broadcast_tasks.send_flagged_digest",
+            "schedule": settings.flagged_digest_hours * 3600,  # every N hours
+        },
     },
 )

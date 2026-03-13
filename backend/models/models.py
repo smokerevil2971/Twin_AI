@@ -108,6 +108,7 @@ class Conversation(Base):
     language: Mapped[str] = mapped_column(String(10), default="en")
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    alert_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

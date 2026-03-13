@@ -38,6 +38,7 @@ BLOCKED_TOPICS = [
 HINDI_RE = re.compile(r"[\u0900-\u097F]")
 
 # ─── Fallback messages ────────────────────────────────────────────────────────
+# Used when bot deflects off-topic / rate-limited queries
 FALLBACK_MSGS = {
     "en": (
         "I'm sorry, I can only assist with questions about our products and services. "
@@ -47,6 +48,12 @@ FALLBACK_MSGS = {
         "माफ़ करें, मैं केवल हमारे उत्पादों और सेवाओं के बारे में सहायता कर सकता हूँ। "
         "अन्य प्रश्नों के लिए, कृपया हमसे सीधे संपर्क करें।"
     ),
+}
+
+# Used when bot can't find an answer (low confidence) — warmer, signals escalation
+UNANSWERED_MSGS = {
+    "en": "Great question! Our team will get back to you shortly. 🙏",
+    "hi": "बहुत अच्छा सवाल! हमारी टीम जल्द ही आपसे संपर्क करेगी। 🙏",
 }
 
 RATE_LIMIT_MSGS = {
@@ -211,12 +218,15 @@ def fallback_node(state: BotState) -> dict:
     reason = state.get("fallback_reason", "")
     if reason == "rate_limit":
         msg = RATE_LIMIT_MSGS.get(lang, RATE_LIMIT_MSGS["en"])
+    elif reason == "no_context":
+        # Warmer message — signals escalation to owner
+        msg = UNANSWERED_MSGS.get(lang, UNANSWERED_MSGS["en"])
     else:
         msg = FALLBACK_MSGS.get(lang, FALLBACK_MSGS["en"])
     return {
         "response": msg,
         "confidence_score": 0.0,
-        "flagged": False,
+        "flagged": True if reason == "no_context" else False,
     }
 
 
