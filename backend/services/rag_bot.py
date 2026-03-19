@@ -1,20 +1,21 @@
 """
-LangGraph RAG Bot — Phase 3.2
+LangGraph RAG Bot — Phase 3.2 (dual-provider: NIM or Gemini)
 
 Pipeline:
   sanitise → rate_limit → detect_language → injection_guard →
-  embed_query → retrieve → context_check → generate_response →
+  embed_query → retrieve → rerank → context_check → generate_response →
   confidence_check → fallback / output → END
 
+Provider switch: set LLM_PROVIDER=nim or LLM_PROVIDER=gemini in .env
 Each node receives the full BotState dict and returns a partial update.
 """
 import re
 import logging
 import uuid
+import httpx
 from datetime import datetime, timezone
 from typing import Any, TypedDict, Optional
 
-import google.generativeai as genai
 from langgraph.graph import StateGraph, END
 
 from core.config import settings
@@ -38,7 +39,6 @@ BLOCKED_TOPICS = [
 HINDI_RE = re.compile(r"[\u0900-\u097F]")
 
 # ─── Fallback messages ────────────────────────────────────────────────────────
-# Used when bot deflects off-topic / rate-limited queries
 FALLBACK_MSGS = {
     "en": (
         "I'm sorry, I can only assist with questions about our products and services. "
@@ -50,7 +50,6 @@ FALLBACK_MSGS = {
     ),
 }
 
-# Used when bot can't find an answer (low confidence) — warmer, signals escalation
 UNANSWERED_MSGS = {
     "en": "Great question! Our team will get back to you shortly. 🙏",
     "hi": "बहुत अच्छा सवाल! हमारी टीम जल्द ही आपसे संपर्क करेगी। 🙏",
@@ -129,18 +128,41 @@ def injection_guard_node(state: BotState) -> dict:
 
 
 def embed_node(state: BotState) -> dict:
-    """Embed the query using Gemini."""
+    """Embed the query using the configured provider (NIM or Gemini)."""
     try:
-        genai.configure(api_key=settings.gemini_api_key)
-        result = genai.embed_content(
-            model=settings.embedding_model,
-            content=state["clean_message"],
-            task_type="retrieval_query",
-        )
-        return {"query_embedding": result["embedding"]}
+        if settings.is_nim:
+            embedding = _embed_nim(state["clean_message"])
+        else:
+            embedding = _embed_gemini(state["clean_message"])
+        return {"query_embedding": embedding}
     except Exception as e:
         logger.error(f"[BOT] embed failed: {e}")
         return {"query_embedding": [], "done": True, "fallback_reason": "no_context"}
+
+
+def _embed_nim(text: str) -> list:
+    """Single-query NIM embedding."""
+    from openai import OpenAI
+    client = OpenAI(base_url=settings.nim_base_url, api_key=settings.nim_embed_api_key)
+    response = client.embeddings.create(
+        model=settings.embedding_model,
+        input=[text],
+        encoding_format="float",
+        extra_body={"input_type": "query", "truncate": "END"},
+    )
+    return response.data[0].embedding
+
+
+def _embed_gemini(text: str) -> list:
+    """Single-query Gemini embedding."""
+    import google.generativeai as genai
+    genai.configure(api_key=settings.gemini_api_key)
+    result = genai.embed_content(
+        model=settings.embedding_model,
+        content=text,
+        task_type="retrieval_query",
+    )
+    return result["embedding"]
 
 
 def retrieve_node(state: BotState) -> dict:
@@ -157,6 +179,60 @@ def retrieve_node(state: BotState) -> dict:
     }
 
 
+async def rerank_node(state: BotState) -> dict:
+    """
+    Rerank retrieved chunks using NIM rerank-qa-mistral-4b.
+    Only active when LLM_PROVIDER=nim and chunks exist.
+    Falls back gracefully if reranking fails — pipeline continues unchanged.
+    """
+    chunks = state.get("retrieved_chunks", [])
+    distances = state.get("retrieved_distances", [])
+    query = state.get("clean_message", "")
+
+    if not chunks or not query or not settings.is_nim:
+        return {}  # skip reranking for Gemini provider or empty results
+
+    try:
+        url = f"{settings.nim_base_url}/ranking"
+        headers = {
+            "Authorization": f"Bearer {settings.nim_rerank_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": settings.rerank_model,
+            "query": {"text": query},
+            "passages": [{"text": chunk} for chunk in chunks],
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        rankings = data.get("rankings", [])
+        if not rankings:
+            return {}
+
+        # Reorder chunks and distances by reranker score (highest first)
+        sorted_rankings = sorted(rankings, key=lambda x: x.get("logit", 0), reverse=True)
+        reranked_chunks = []
+        reranked_distances = []
+        for rank in sorted_rankings:
+            idx = rank.get("index", 0)
+            if idx < len(chunks):
+                reranked_chunks.append(chunks[idx])
+                reranked_distances.append(distances[idx] if idx < len(distances) else 1.0)
+
+        logger.info(f"[BOT][NIM] reranked {len(reranked_chunks)} chunks")
+        return {
+            "retrieved_chunks": reranked_chunks,
+            "retrieved_distances": reranked_distances,
+        }
+
+    except Exception as e:
+        logger.warning(f"[BOT] rerank skipped (non-fatal): {e}")
+        return {}  # pipeline continues with original retrieval order
+
+
 def context_check_node(state: BotState) -> dict:
     """Check if retrieved context is useful (distance threshold 0.7)."""
     dists = state.get("retrieved_distances", [])
@@ -168,7 +244,7 @@ def context_check_node(state: BotState) -> dict:
 
 
 def generate_node(state: BotState) -> dict:
-    """Generate a grounded response from Gemini using retrieved context."""
+    """Generate a grounded response using the configured provider (NIM or Gemini)."""
     lang_label = "Hindi" if state["language"] == "hi" else "English"
     context = "\n\n".join(state["retrieved_chunks"])
     prompt = (
@@ -181,21 +257,42 @@ def generate_node(state: BotState) -> dict:
         f"Answer:"
     )
     try:
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.llm_model)
-        resp = model.generate_content(prompt)
-        # Safely extract text from response
-        if hasattr(resp, "text") and resp.text:
-            response_text = resp.text.strip()
-        elif resp.candidates:
-            response_text = resp.candidates[0].content.parts[0].text.strip()
+        if settings.is_nim:
+            response_text = _generate_nim(prompt)
         else:
-            raise ValueError("Empty response from Gemini LLM")
+            response_text = _generate_gemini(prompt)
         logger.info(f"[BOT] generated response ({len(response_text)} chars)")
         return {"response": response_text}
     except Exception as e:
         logger.error(f"[BOT] generation failed: {e}")
         return {"fallback_reason": "no_context", "done": True}
+
+
+def _generate_nim(prompt: str) -> str:
+    """Generate via NVIDIA NIM (OpenAI-compatible chat completions)."""
+    from openai import OpenAI
+    client = OpenAI(base_url=settings.nim_base_url, api_key=settings.nim_llm_api_key)
+    resp = client.chat.completions.create(
+        model=settings.llm_model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=512,
+        temperature=0.7,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _generate_gemini(prompt: str) -> str:
+    """Generate via Google Gemini."""
+    import google.generativeai as genai
+    genai.configure(api_key=settings.gemini_api_key)
+    model_name = settings.llm_model.removeprefix("models/")
+    model = genai.GenerativeModel(model_name)
+    resp = model.generate_content(prompt)
+    if hasattr(resp, "text") and resp.text:
+        return resp.text.strip()
+    elif resp.candidates:
+        return resp.candidates[0].content.parts[0].text.strip()
+    raise ValueError("Empty response from Gemini LLM")
 
 
 def confidence_check_node(state: BotState) -> dict:
@@ -204,8 +301,6 @@ def confidence_check_node(state: BotState) -> dict:
     if not dists:
         confidence = 0.0
     else:
-        # ChromaDB cosine distance: 0 = identical, 2 = opposite
-        # Normalize to 0-1: score = 1 - (min_dist / 2)
         confidence = round(max(0.0, 1.0 - (min(dists) / 2.0)), 4)
     flagged = confidence < 0.75
     logger.info(f"[BOT] confidence={confidence}, flagged={flagged}")
@@ -219,7 +314,6 @@ def fallback_node(state: BotState) -> dict:
     if reason == "rate_limit":
         msg = RATE_LIMIT_MSGS.get(lang, RATE_LIMIT_MSGS["en"])
     elif reason == "no_context":
-        # Warmer message — signals escalation to owner
         msg = UNANSWERED_MSGS.get(lang, UNANSWERED_MSGS["en"])
     else:
         msg = FALLBACK_MSGS.get(lang, FALLBACK_MSGS["en"])
@@ -231,17 +325,15 @@ def fallback_node(state: BotState) -> dict:
 
 
 async def output_node(state: BotState) -> dict:
-    """Send response via Gupshup and log Conversation to Postgres."""
+    """Send response via messaging adapter and log Conversation to Postgres."""
     response = state.get("response", FALLBACK_MSGS["en"])
 
-    # Send via Gupshup adapter
     adapter = _get_adapter()
     try:
         await adapter.send_message(phone=state["phone"], message=response)
     except Exception as e:
         logger.error(f"[BOT] send_message failed: {e}")
 
-    # Log to Postgres (skip if no db session injected)
     db = state.get("_db")
     if db:
         from models.models import Conversation
@@ -294,6 +386,7 @@ def build_rag_graph():
     g.add_node("injection_guard", injection_guard_node)
     g.add_node("embed", embed_node)
     g.add_node("retrieve", retrieve_node)
+    g.add_node("rerank", rerank_node)          # NEW — NIM reranker (no-op for Gemini)
     g.add_node("context_check", context_check_node)
     g.add_node("generate", generate_node)
     g.add_node("confidence_check", confidence_check_node)
@@ -306,9 +399,10 @@ def build_rag_graph():
     g.add_edge("detect_language", "injection_guard")
     g.add_conditional_edges("injection_guard", should_fallback_after_injection)
     g.add_conditional_edges("embed", should_fallback_after_embed)
-    g.add_edge("retrieve", "context_check")
+    g.add_edge("retrieve", "rerank")           # retrieve → rerank → context_check
+    g.add_edge("rerank", "context_check")
     g.add_conditional_edges("context_check", should_fallback_after_context)
-    g.add_conditional_edges("generate", should_fallback_after_generate)  # fixed
+    g.add_conditional_edges("generate", should_fallback_after_generate)
     g.add_edge("confidence_check", "output")
     g.add_edge("fallback", "output")
     g.add_edge("output", END)
@@ -323,7 +417,6 @@ _rag_graph = build_rag_graph()
 # ─── Messaging adapter helper ─────────────────────────────────────────────────
 
 def _get_adapter():
-    """Returns the correct messaging adapter based on MESSAGING_PROVIDER env var."""
     from services.gupshup_adapter import get_messaging_adapter
     return get_messaging_adapter()
 

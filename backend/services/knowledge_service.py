@@ -2,7 +2,7 @@
 Knowledge Base ingestion service — Phase 3.1
 
 Pipeline:
-  file bytes → extract text → chunk → embed (Gemini) → store (ChromaDB) → record (Postgres)
+  file bytes → extract text → chunk → embed (NIM or Gemini) → store (ChromaDB) → record (Postgres)
 """
 import uuid
 import logging
@@ -15,7 +15,6 @@ import pytesseract
 import io
 
 import chromadb
-import google.generativeai as genai
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
@@ -121,23 +120,57 @@ def query_knowledge_base(
     return {"documents": docs, "distances": dists}
 
 
-# ─── Embeddings ───────────────────────────────────────────────────────────────
+# ─── Embeddings (dual-provider) ───────────────────────────────────────────────
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate Gemini embeddings using direct google-generativeai SDK."""
+    """
+    Generate embeddings using the configured provider.
+    LLM_PROVIDER=nim  → NVIDIA NIM nemoretriever (OpenAI-compatible)
+    LLM_PROVIDER=gemini → Google Gemini embedding-001
+    """
+    if settings.is_nim:
+        return _embed_texts_nim(texts)
+    else:
+        return _embed_texts_gemini(texts)
+
+
+def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
+    """Embed via NVIDIA NIM nemoretriever endpoint (OpenAI-compatible)."""
+    from openai import OpenAI
+    client = OpenAI(
+        base_url=settings.nim_base_url,
+        api_key=settings.nim_embed_api_key,
+    )
+    embeddings = []
+    batch_size = 50   # NIM safe batch size
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = client.embeddings.create(
+            model=settings.embedding_model,
+            input=batch,
+            encoding_format="float",
+            extra_body={"input_type": "passage", "truncate": "END"},
+        )
+        embeddings.extend([item.embedding for item in response.data])
+    logger.info(f"[KB][NIM] Generated {len(embeddings)} embeddings via {settings.embedding_model}")
+    return embeddings
+
+
+def _embed_texts_gemini(texts: list[str]) -> list[list[float]]:
+    """Embed via Google Gemini embedding-001."""
+    import google.generativeai as genai
     genai.configure(api_key=settings.gemini_api_key)
     embeddings = []
-    # Batch in groups of 100 (Gemini API limit per call)
     batch_size = 100
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         result = genai.embed_content(
-            model=settings.embedding_model,   # "models/embedding-001"
+            model=settings.embedding_model,
             content=batch,
             task_type="retrieval_document",
         )
         embeddings.extend(result["embedding"])
-    logger.info(f"[KB] Generated {len(embeddings)} embeddings using {settings.embedding_model}")
+    logger.info(f"[KB][Gemini] Generated {len(embeddings)} embeddings via {settings.embedding_model}")
     return embeddings
 
 
@@ -155,7 +188,7 @@ async def ingest_document(
     Full ingestion pipeline:
     1. Extract text
     2. Chunk text
-    3. Generate Gemini embeddings
+    3. Generate embeddings (NIM or Gemini)
     4. Store in ChromaDB
     5. Save KnowledgeBase record in Postgres
     """
@@ -175,7 +208,7 @@ async def ingest_document(
     if not chunks:
         raise HTTPException(422, "File produced no usable text chunks.")
 
-    # Embed via Gemini
+    # Embed
     try:
         embeddings = embed_texts(chunks)
     except Exception as e:
