@@ -764,27 +764,31 @@ async def whatsapp_inbound_webhook(
     adapter = get_messaging_adapter()
 
     async with get_db_context() as db:
+        # Get client regardless of deleted status to avoid UniqueConstraint(phone) errors
         result = await db.execute(
-            select(Client).where(
-                Client.phone == sender_phone,
-                Client.is_deleted == False,
-            )
+            select(Client).where(Client.phone == sender_phone)
         )
         client = result.scalar_one_or_none()
 
-        # ── 1.1 First contact — brand new client ──────────────────────────
-        if client is None:
-            # Create client row (opted_in=False until they say YES)
-            new_client = Client(
-                name=sender_phone,   # placeholder until we get their name
-                phone=sender_phone,
-                opted_in=False,
-                language="en",
-            )
-            db.add(new_client)
+        # ── 1.1 First contact — brand new (or returning deleted) client ───
+        if client is None or client.is_deleted:
+            if client is None:
+                # Completely new client
+                client = Client(
+                    name=sender_phone,
+                    phone=sender_phone,
+                    opted_in=False,
+                    language="en",
+                )
+                db.add(client)
+            else:
+                # Returning deleted client — un-delete them and reset preferences
+                client.is_deleted = False
+                client.opted_in = False
+
             await db.commit()
-            await db.refresh(new_client)
-            logger.info(f"[ONBOARD] New client created: {sender_phone}")
+            await db.refresh(client)
+            logger.info(f"[ONBOARD] Client onboard started: {sender_phone}")
 
             # Send warm welcome + opt-in consent question
             await adapter.send_message(
