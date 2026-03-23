@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: str = "http://localhost:3000,http://localhost:5173"
 
+    # Catalogue URL
+    catalogue_url: str = ""
+
     # Uploads
     upload_dir: str = "/app/uploads"
     max_upload_size_mb: int = 20

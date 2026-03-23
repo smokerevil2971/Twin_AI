@@ -320,6 +320,7 @@ async def generate_node(state: BotState) -> dict:
             f"You are a friendly customer service assistant.\n"
             f"Answer ONLY based on the context provided below. "
             f"Do NOT make up information not in the context.\n"
+            f"When quoting prices, ALWAYS include the Unit of measurement, Minimum Order Quantity (MOQ), and GST details if they are present in the context.\n"
             f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
             f"Context:\n{context}\n\n"
             f"{history_prompt}"

@@ -913,6 +913,38 @@ async def whatsapp_inbound_webhook(
             logger.info(f"[ONBOARD] {sender_phone} self-re-subscribed")
             return Response(status_code=200, content="ok")
 
+        # ── 3.1 & 3.3 Quick Menu & Catalogue (Priority 3) ─────────────────────
+        if msg_upper in ("MENU", "/MENU", "PRODUCTS", "CATEGORIES"):
+            menu_text = (
+                "📦 *Our Product Categories*\n\n"
+                "1️⃣ PVC Wall Panels\n"
+                "2️⃣ Wall Putty & Paints\n"
+                "3️⃣ Waterproofing Solutions\n"
+                "4️⃣ Flooring\n\n"
+                "Reply with the product you want to know more about, or ask any specific question! 😊"
+            )
+            await adapter.send_message(phone=sender_phone, message=menu_text)
+            logger.info(f"[ONBOARD] {sender_phone} requested menu")
+            return Response(status_code=200, content="ok")
+            
+        if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
+            from core.config import settings
+            if settings.catalogue_url:
+                await adapter.send_media_message(
+                    phone=sender_phone,
+                    media_url=settings.catalogue_url,
+                    media_type="document",
+                    filename="Devraj_Traders_Catalogue.pdf",
+                    caption="Here is our latest product catalogue and price list! 📄",
+                )
+            else:
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message="Our catalogue is currently being updated. You can ask me about any product prices right here! 😊",
+                )
+            logger.info(f"[ONBOARD] {sender_phone} requested catalogue")
+            return Response(status_code=200, content="ok")
+
         # ── Pass to RAG bot as normal ──────────────────────────────────────
         client_id = str(client.id)
         
