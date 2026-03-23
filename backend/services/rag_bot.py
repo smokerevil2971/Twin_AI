@@ -129,6 +129,15 @@ async def rate_limit_node(state: BotState) -> dict:
     return {"done": False}
 
 
+def order_intent_node(state: BotState) -> dict:
+    """Detect explicit 'ORDER' command to trigger owner alert."""
+    msg = state["clean_message"].strip().upper()
+    if msg == "ORDER":
+        logger.info("[BOT] order intent detected!")
+        return {"done": True, "fallback_reason": "order_intent"}
+    return {"done": False}
+
+
 def detect_language_node(state: BotState) -> dict:
     """Detect Hindi or English based on Unicode character count."""
     text = state["clean_message"]
@@ -321,6 +330,7 @@ async def generate_node(state: BotState) -> dict:
             f"Answer ONLY based on the context provided below. "
             f"Do NOT make up information not in the context.\n"
             f"When quoting prices, ALWAYS include the Unit of measurement, Minimum Order Quantity (MOQ), and GST details if they are present in the context.\n"
+            f"If you provide pricing or product details, politely append: 'Interested in placing an order? Reply *ORDER* and we'll connect you.'\n"
             f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
             f"Context:\n{context}\n\n"
             f"{history_prompt}"
@@ -407,6 +417,22 @@ async def fallback_node(state: BotState) -> dict:
         msg = RATE_LIMIT_MSGS.get(lang, RATE_LIMIT_MSGS["en"])
         return {"response": msg, "confidence_score": 0.0, "flagged": False}
 
+    if reason == "order_intent":
+        try:
+            adapter = _get_adapter()
+            if settings.owner_phone:
+                owner_msg = f"🚨 *NEW ORDER LEAD* 🚨\nPhone: {state.get('phone')}\nClient responded to the order prompt! Please contact them to confirm quantities."
+                await adapter.send_message(phone=settings.owner_phone, message=owner_msg)
+                logger.info(f"[BOT] Alerted owner about new order lead from {state.get('phone')}.")
+        except Exception as e:
+            logger.error(f"[BOT] Failed to alert owner about order lead: {e}")
+            
+        return {
+            "response": "Great! Our team has been notified and will contact you shortly to confirm your order details. 📞", 
+            "confidence_score": 1.0, 
+            "flagged": False
+        }
+
     if reason == "no_context":
         # Try to answer from general knowledge instead of a static message
         lang_label = "Hindi" if lang == "hi" else "English"
@@ -473,6 +499,9 @@ async def output_node(state: BotState) -> dict:
 # ─── Conditional edge helpers ─────────────────────────────────────────────────
 
 def should_fallback_after_rate(state: BotState) -> str:
+    return "fallback" if state.get("done") else "order_intent"
+
+def should_fallback_after_order_intent(state: BotState) -> str:
     return "fallback" if state.get("done") else "detect_language"
 
 
@@ -499,6 +528,7 @@ def build_rag_graph():
 
     g.add_node("sanitise", sanitise_node)
     g.add_node("rate_limit", rate_limit_node)
+    g.add_node("order_intent", order_intent_node)
     g.add_node("detect_language", detect_language_node)
     g.add_node("injection_guard", injection_guard_node)
     g.add_node("embed", embed_node)
@@ -513,6 +543,7 @@ def build_rag_graph():
     g.set_entry_point("sanitise")
     g.add_edge("sanitise", "rate_limit")
     g.add_conditional_edges("rate_limit", should_fallback_after_rate)
+    g.add_conditional_edges("order_intent", should_fallback_after_order_intent)
     g.add_edge("detect_language", "injection_guard")
     g.add_conditional_edges("injection_guard", should_fallback_after_injection)
     g.add_conditional_edges("embed", should_fallback_after_embed)
