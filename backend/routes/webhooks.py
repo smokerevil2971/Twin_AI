@@ -308,6 +308,7 @@ async def whatsapp_inbound_webhook(
                     "📊 *COMMANDS*\n"
                     "• `/status` — Platform stats\n"
                     "• `/clients` — Opted-in count\n"
+                    "• `/catalogue= URL` — Set catalogue link\n"
                     "• `/help` — This guide\n\n"
 
                     "━━━━━━━━━━━━━━━━━━\n"
@@ -348,6 +349,20 @@ async def whatsapp_inbound_webhook(
                 )).scalar_one()
             adapter = get_messaging_adapter()
             await adapter.send_message(phone=sender_phone, message=f"👥 Opted-in clients: {count}")
+            return Response(status_code=200, content="ok")
+
+        # ── /catalogue ───────────────────────────────────────────────────
+        cat_match = re.match(r"(?i)^/CATALOGUE\s*=\s*(.+)$", msg)
+        if cat_match:
+            new_url = cat_match.group(1).strip()
+            from core.redis_client import get_redis
+            r = get_redis()
+            await r.set("devraj_catalogue_url", new_url)
+            adapter = get_messaging_adapter()
+            await adapter.send_message(
+                phone=sender_phone,
+                message=f"✅ Catalogue URL updated successfully to:\n{new_url}"
+            )
             return Response(status_code=200, content="ok")
 
         # ── SCHEDULE: <date> <time> <message> ─────────────────────────────
@@ -928,11 +943,17 @@ async def whatsapp_inbound_webhook(
             return Response(status_code=200, content="ok")
             
         if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
-            from core.config import settings
-            if settings.catalogue_url:
+            from core.redis_client import get_redis
+            r = get_redis()
+            cached_url_bytes = await r.get("devraj_catalogue_url")
+            dynamic_url = cached_url_bytes.decode("utf-8") if cached_url_bytes else None
+            
+            final_url = dynamic_url or settings.catalogue_url
+            
+            if final_url:
                 await adapter.send_media_message(
                     phone=sender_phone,
-                    media_url=settings.catalogue_url,
+                    media_url=final_url,
                     media_type="document",
                     filename="Devraj_Traders_Catalogue.pdf",
                     caption="Here is our latest product catalogue and price list! 📄",
