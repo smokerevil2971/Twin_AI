@@ -29,6 +29,8 @@ from services.broadcast_service import create_broadcast
 from services.gupshup_adapter import get_messaging_adapter
 from services.media_processor import process_media, UNSUPPORTED_MSG, RATE_LIMITED_MSG
 from tasks.broadcast_tasks import send_broadcast
+import httpx
+from services import knowledge_service
 from core.redis_client import (
     get_onboard_state, set_onboard_state, clear_onboard_state,
     ONBOARD_AWAITING_CONSENT, ONBOARD_AWAITING_LANGUAGE,
@@ -612,13 +614,11 @@ async def whatsapp_inbound_webhook(
             logger.info(f"[OWNER] Client spreadsheet received ({media_type})")
             adapter = get_messaging_adapter()
             try:
-                import httpx
-                from core.config import settings as app_settings
                 async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
-                    if app_settings.messaging_provider == "twilio" and app_settings.twilio_account_sid:
+                    if settings.messaging_provider == "twilio" and settings.twilio_account_sid:
                         resp = await hclient.get(
                             media_url,
-                            auth=(app_settings.twilio_account_sid, app_settings.twilio_auth_token),
+                            auth=(settings.twilio_account_sid, settings.twilio_auth_token),
                         )
                     else:
                         resp = await hclient.get(media_url)
@@ -673,13 +673,11 @@ async def whatsapp_inbound_webhook(
             adapter = get_messaging_adapter()
             try:
                 # Download file from Twilio (requires Basic Auth)
-                import httpx
-                from core.config import settings as app_settings
                 async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
-                    if app_settings.messaging_provider == "twilio" and app_settings.twilio_account_sid:
+                    if settings.messaging_provider == "twilio" and settings.twilio_account_sid:
                         resp = await hclient.get(
                             media_url,
-                            auth=(app_settings.twilio_account_sid, app_settings.twilio_auth_token),
+                            auth=(settings.twilio_account_sid, settings.twilio_auth_token),
                         )
                     else:
                         resp = await hclient.get(media_url)
@@ -703,8 +701,6 @@ async def whatsapp_inbound_webhook(
                 category = caption_lower if caption_lower in valid_categories else "documents"
 
                 # Ingest into ChromaDB + Postgres
-                from services import knowledge_service
-                from core.database import AsyncSessionLocal
                 async with AsyncSessionLocal() as db:
                     result = await knowledge_service.ingest_document(
                         db=db,
