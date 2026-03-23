@@ -29,6 +29,10 @@ from services.broadcast_service import create_broadcast
 from services.gupshup_adapter import get_messaging_adapter
 from services.media_processor import process_media, UNSUPPORTED_MSG, RATE_LIMITED_MSG
 from tasks.broadcast_tasks import send_broadcast
+from core.redis_client import (
+    get_onboard_state, set_onboard_state, clear_onboard_state,
+    ONBOARD_AWAITING_CONSENT, ONBOARD_AWAITING_LANGUAGE,
+)
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -739,7 +743,7 @@ async def whatsapp_inbound_webhook(
         # Fall through to the regular RAG bot section below
 
 
-    # ── Regular client — RAG bot ──────────────────────────────────────────
+    # ── Regular client — Onboarding + RAG bot ────────────────────────────
     # If media attached, convert to text first
     if media_url and media_type:
         logger.info(f"[MEDIA] Processing {media_type} from {sender_phone}")
@@ -757,6 +761,8 @@ async def whatsapp_inbound_webhook(
     if not message_text:
         return Response(status_code=200, content="ok")
 
+    adapter = get_messaging_adapter()
+
     async with get_db_context() as db:
         result = await db.execute(
             select(Client).where(
@@ -765,8 +771,144 @@ async def whatsapp_inbound_webhook(
             )
         )
         client = result.scalar_one_or_none()
-        client_id = str(client.id) if client else None
 
+        # ── 1.1 First contact — brand new client ──────────────────────────
+        if client is None:
+            # Create client row (opted_in=False until they say YES)
+            new_client = Client(
+                name=sender_phone,   # placeholder until we get their name
+                phone=sender_phone,
+                opted_in=False,
+                language="en",
+            )
+            db.add(new_client)
+            await db.commit()
+            await db.refresh(new_client)
+            logger.info(f"[ONBOARD] New client created: {sender_phone}")
+
+            # Send warm welcome + opt-in consent question
+            await adapter.send_message(
+                phone=sender_phone,
+                message=(
+                    "👋 *Welcome to Rakesh Telang!*\n\n"
+                    "I'm your AI assistant. I can help you with:\n"
+                    "• Product prices & availability 🏠\n"
+                    "• Ongoing offers & discounts 🎁\n"
+                    "• Order enquiries 📦\n"
+                    "• Any product questions!\n\n"
+                    "Just ask me anything in *English or हिंदी*. 😊\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "📢 Would you like to receive product updates & offers from us?\n\n"
+                    "Reply *YES* to subscribe 🔔\n"
+                    "Reply *NO* to skip (you can still chat with me anytime)\n\n"
+                    "_For direct help: +91-9075805070_"
+                ),
+            )
+            await set_onboard_state(sender_phone, ONBOARD_AWAITING_CONSENT)
+            return Response(status_code=200, content="ok")
+
+        # ── 1.2 & 1.3 Onboarding state machine ───────────────────────────
+        onboard_state = await get_onboard_state(sender_phone)
+
+        if onboard_state == ONBOARD_AWAITING_CONSENT:
+            reply = message_text.strip().upper()
+            if reply in ("YES", "Y", "HAN", "हाँ", "हां", "HA"):
+                client.opted_in = True
+                await db.commit()
+                logger.info(f"[ONBOARD] {sender_phone} opted IN")
+                await set_onboard_state(sender_phone, ONBOARD_AWAITING_LANGUAGE)
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        "✅ *You're subscribed!* We'll keep you updated with the latest offers. 🎉\n\n"
+                        "━━━━━━━━━━━━━━━━━━\n"
+                        "🌐 *One last thing — what language do you prefer?*\n\n"
+                        "Reply *EN* for English 🇬🇧\n"
+                        "Reply *HINDI* for हिंदी 🇮🇳"
+                    ),
+                )
+            elif reply in ("NO", "N", "NAI", "NAHI", "नहीं", "नही"):
+                client.opted_in = False
+                await db.commit()
+                logger.info(f"[ONBOARD] {sender_phone} opted OUT")
+                await clear_onboard_state(sender_phone)
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        "👍 No problem! You won't receive broadcast messages.\n"
+                        "You can still ask me anything about our products anytime.\n\n"
+                        "_To subscribe later, just say *START*._"
+                    ),
+                )
+            else:
+                # Unrecognised reply — nudge them
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message="Please reply *YES* to subscribe to updates or *NO* to skip. 🙏",
+                )
+            return Response(status_code=200, content="ok")
+
+        if onboard_state == ONBOARD_AWAITING_LANGUAGE:
+            reply = message_text.strip().upper()
+            if reply in ("HINDI", "HINDI", "HI", "हिंदी", "हिंदी"):
+                client.language = "hi"
+                await db.commit()
+                await clear_onboard_state(sender_phone)
+                logger.info(f"[ONBOARD] {sender_phone} language set to Hindi")
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        "बढ़िया! 🎉 मैं अब हिंदी में जवाब दूंगा।\n\n"
+                        "अब आप मुझसे हमारे किसी भी उत्पाद के बारे में पूछ सकते हैं! 😊"
+                    ),
+                )
+            elif reply in ("EN", "ENGLISH", "ENG"):
+                client.language = "en"
+                await db.commit()
+                await clear_onboard_state(sender_phone)
+                logger.info(f"[ONBOARD] {sender_phone} language set to English")
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        "Great! 🎉 I'll respond in English.\n\n"
+                        "Feel free to ask me anything about our products! 😊"
+                    ),
+                )
+            else:
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message="Please reply *EN* for English or *HINDI* for हिंदी. 🌐",
+                )
+            return Response(status_code=200, content="ok")
+
+        # ── Handle STOP / START self-service opt commands (1.2 extra) ─────
+        msg_upper = message_text.strip().upper()
+        if msg_upper in ("STOP", "UNSUBSCRIBE", "OPT OUT", "OPTOUT"):
+            client.opted_in = False
+            await db.commit()
+            await adapter.send_message(
+                phone=sender_phone,
+                message=(
+                    "✅ You've been unsubscribed from broadcast messages.\n"
+                    "You can still chat with me anytime! 😊\n\n"
+                    "_Reply *START* anytime to re-subscribe._"
+                ),
+            )
+            logger.info(f"[ONBOARD] {sender_phone} self-unsubscribed")
+            return Response(status_code=200, content="ok")
+
+        if msg_upper in ("START", "SUBSCRIBE", "OPT IN", "OPTIN"):
+            client.opted_in = True
+            await db.commit()
+            await adapter.send_message(
+                phone=sender_phone,
+                message="✅ You're re-subscribed! You'll now receive our latest offers & updates. 🔔",
+            )
+            logger.info(f"[ONBOARD] {sender_phone} self-re-subscribed")
+            return Response(status_code=200, content="ok")
+
+        # ── Pass to RAG bot as normal ──────────────────────────────────────
+        client_id = str(client.id)
         await run_bot(
             phone=sender_phone,
             raw_message=message_text,
