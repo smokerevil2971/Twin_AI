@@ -1,8 +1,13 @@
 import logging
+import sys
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy import text
+
+from fastapi.staticfiles import StaticFiles
+import os
 
 from core.config import settings
 from core.middleware import logging_middleware
@@ -17,6 +22,7 @@ logging.basicConfig(
     level=logging.DEBUG if settings.app_env == "development" else logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -79,7 +85,51 @@ app.include_router(broadcasts_router)
 app.include_router(webhooks_router)
 app.include_router(knowledge_router)
 
+# ─── Static Media Files (/media/filename) ─────────────────────────────────────
+# Images downloaded from Twilio (with auth) are cached here and served publicly
+# so they can be used as MediaUrl in outbound WhatsApp messages via ngrok.
+UPLOADS_DIR = "/tmp/twinai_media"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory=UPLOADS_DIR), name="media")
+
+# ─── Startup Checks ───────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_checks():
+    """
+    TC-028: Verify database connectivity at startup.
+    Exits immediately with a clear error log if DATABASE_URL is wrong,
+    rather than silently failing on the first request.
+
+    TC-019: Warn loudly if OWNER_PHONE is unset so operators know
+    WhatsApp owner commands (ADD, REMOVE, BROADCAST, etc.) are disabled.
+    """
+    from core.database import engine
+
+    # TC-028 — verify DB
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logger.info("✅ Database connection verified.")
+    except Exception as e:
+        logger.critical(
+            f"❌ Database connection FAILED at startup — check DATABASE_URL. "
+            f"Error: {e}"
+        )
+        sys.exit(1)
+
+    # TC-019 — warn if OWNER_PHONE not configured
+    if not settings.owner_phone:
+        logger.warning(
+            "⚠️  OWNER_PHONE is not set in .env — "
+            "WhatsApp owner commands (ADD, REMOVE, BROADCAST, SCHEDULE, STATUS, "
+            "HELP, and CSV import) are DISABLED. "
+            "All WhatsApp messages will be routed to the RAG bot."
+        )
+    else:
+        logger.info(f"✅ Owner phone configured: {settings.owner_phone}")
+
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
 async def health():
     return {"status": "ok", "version": "2.0.0", "env": settings.app_env}
+

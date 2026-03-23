@@ -66,6 +66,10 @@ class Broadcast(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft")
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Media support: 'image', 'document', or None for text-only broadcasts
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(20), nullable=True)  # 'image' | 'document'
+    media_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)  # for document label
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -1,20 +1,36 @@
 """
-Mock Gupshup adapter — used during development while awaiting Meta approval.
-Swap to RealGupshupAdapter by setting GUPSHUP_MODE=real in .env.
+Messaging adapters — Gupshup (Mock + Real) + interface definition.
 
-All outbound calls are logged. Mock returns success for every message.
+Swap between providers via MESSAGING_PROVIDER and GUPSHUP_MODE env vars.
+Both send_message() and send_media_message() are supported.
 """
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 import uuid
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 class GupshupAdapter(ABC):
+    """Base interface for all messaging adapters."""
+
     @abstractmethod
     async def send_message(self, phone: str, message: str) -> dict:
+        """Send a plain text WhatsApp message."""
+        ...
+
+    @abstractmethod
+    async def send_media_message(
+        self,
+        phone: str,
+        media_url: str,
+        media_type: str,          # 'image' | 'document'
+        caption: str = "",
+        filename: str = "document.pdf",
+    ) -> dict:
+        """Send a media (image or document) WhatsApp message with optional caption."""
         ...
 
     @abstractmethod
@@ -29,11 +45,22 @@ class MockGupshupAdapter(GupshupAdapter):
         mock_id = str(uuid.uuid4())
         logger.info(f"[MOCK GUPSHUP] send_message → {phone} | msg_id={mock_id}")
         logger.info(f"[MOCK GUPSHUP] message preview: {message[:80]}...")
-        return {
-            "status": "submitted",
-            "messageId": mock_id,
-            "phone": phone,
-        }
+        return {"status": "submitted", "messageId": mock_id, "phone": phone}
+
+    async def send_media_message(
+        self,
+        phone: str,
+        media_url: str,
+        media_type: str,
+        caption: str = "",
+        filename: str = "document.pdf",
+    ) -> dict:
+        mock_id = str(uuid.uuid4())
+        logger.info(
+            f"[MOCK GUPSHUP] send_media_message → {phone} | "
+            f"type={media_type} url={media_url[:60]} | msg_id={mock_id}"
+        )
+        return {"status": "submitted", "messageId": mock_id, "phone": phone}
 
     async def verify_webhook_signature(self, payload: bytes, signature: str) -> bool:
         logger.info("[MOCK GUPSHUP] verify_webhook_signature → always True in mock mode")
@@ -60,6 +87,50 @@ class RealGupshupAdapter(GupshupAdapter):
                 "source": self.sender,
                 "destination": phone,
                 "message": message,
+                "src.name": self.app_name,
+            },
+            headers={"apikey": self.api_key},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def send_media_message(
+        self,
+        phone: str,
+        media_url: str,
+        media_type: str,
+        caption: str = "",
+        filename: str = "document.pdf",
+    ) -> dict:
+        """
+        Send image or document via Gupshup.
+        Gupshup media message format:
+          message = JSON string with type, originalUrl, caption/filename
+        """
+        import json
+        import httpx
+
+        if media_type == "image":
+            msg_payload = json.dumps({
+                "type": "image",
+                "originalUrl": media_url,
+                "caption": caption,
+            })
+        else:  # document
+            msg_payload = json.dumps({
+                "type": "file",
+                "url": media_url,
+                "filename": filename,
+                "caption": caption,
+            })
+
+        response = await self.client.post(
+            "/sm/api/v1/msg",
+            data={
+                "channel": "whatsapp",
+                "source": self.sender,
+                "destination": phone,
+                "message": msg_payload,
                 "src.name": self.app_name,
             },
             headers={"apikey": self.api_key},

@@ -93,9 +93,15 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login")
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    owner = await _get_owner(db)
+    """
+    TC-003 fix: Returns the same generic 401 whether the owner account
+    doesn't exist OR the password is wrong — prevents email enumeration
+    (an attacker could previously distinguish the two cases via the 404).
+    """
+    result = await db.execute(select(Owner))
+    owner = result.scalar_one_or_none()
 
-    if not verify_password(body.password, owner.password_hash):
+    if not owner or not verify_password(body.password, owner.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",

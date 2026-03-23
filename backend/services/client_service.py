@@ -78,6 +78,21 @@ async def import_clients(
     phone_col = column_mapping.get("phone")
     email_col = column_mapping.get("email")
 
+    # TC-007 fix: Validate that the mapped column names actually exist in the file.
+    # A wrong column name previously caused all rows to silently yield empty strings,
+    # resulting in 0 imports with no user-facing error.
+    df_cols = list(df.columns)
+    missing_cols = [v for v in [name_col, phone_col] if v and v not in df_cols]
+    if missing_cols:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Column(s) not found in uploaded file: {missing_cols}. "
+                f"Available columns are: {df_cols}. "
+                f"Please check your column mapping and try again."
+            )
+        )
+
     if not name_col or not phone_col:
         raise ValueError("Column mapping must include at least 'name' and 'phone'.")
 

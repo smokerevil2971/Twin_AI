@@ -10,6 +10,7 @@ Provider switch: set LLM_PROVIDER=nim or LLM_PROVIDER=gemini in .env
 Each node receives the full BotState dict and returns a partial update.
 """
 import re
+import asyncio
 import logging
 import uuid
 import httpx
@@ -29,10 +30,16 @@ logger = logging.getLogger(__name__)
 MAX_MSGS_PER_HOUR = 20
 
 # ─── Injection guard blocklist ────────────────────────────────────────────────
+# TC-023 fix: Removed broad single-word blocks ("code", "hack", "program") that
+# were triggering on legitimate solar queries like "error code E07" or
+# "how to program my inverter". Replaced with precise multi-word phrases.
 BLOCKED_TOPICS = [
-    "politics", "news", "cricket", "weather", "code", "program",
-    "hack", "joke", "poem", "recipe", "medicine", "doctor",
-    "stock market", "investment", "crypto", "bitcoin",
+    "politics", "news", "cricket", "weather",
+    "write code", "write a program", "write a script",
+    "hacking", "how to hack", "jailbreak",
+    "tell me a joke", "joke", "poem", "write a poem",
+    "recipe", "medicine", "doctor", "diagnosis",
+    "stock market", "investment advice", "crypto", "bitcoin",
 ]
 
 # ─── Hindi Unicode range ──────────────────────────────────────────────────────
@@ -95,13 +102,23 @@ def sanitise_node(state: BotState) -> dict:
 
 
 async def rate_limit_node(state: BotState) -> dict:
-    """Allow max 20 msgs per client per hour via Redis counter."""
+    """Allow max 20 msgs per client per hour via Redis counter.
+
+    TC-024 fix: If Redis is unavailable, degrade gracefully — skip rate limiting
+    rather than crashing the entire webhook with a ConnectionError.
+    A warning is logged so operators can detect the outage.
+    """
     client_key = state.get("client_id") or state["phone"]
     key = f"rate:{client_key}"
-    count = await increment_rate(key, window_seconds=3600)
-    logger.info(f"[BOT] rate check → {key} = {count}")
-    if count > MAX_MSGS_PER_HOUR:
-        return {"done": True, "fallback_reason": "rate_limit"}
+    try:
+        count = await increment_rate(key, window_seconds=3600)
+        logger.info(f"[BOT] rate check → {key} = {count}")
+        if count > MAX_MSGS_PER_HOUR:
+            return {"done": True, "fallback_reason": "rate_limit"}
+    except Exception as e:
+        logger.warning(
+            f"[BOT] Redis unavailable — rate limiting skipped for {key}: {e}"
+        )
     return {"done": False}
 
 
@@ -127,13 +144,19 @@ def injection_guard_node(state: BotState) -> dict:
     return {}
 
 
-def embed_node(state: BotState) -> dict:
-    """Embed the query using the configured provider (NIM or Gemini)."""
+async def embed_node(state: BotState) -> dict:
+    """Embed the query using the configured provider (NIM or Gemini).
+
+    NOTE: Both _embed_nim and _embed_gemini are synchronous (httpx.Client /
+    google-generativeai SDK). We run them in the default thread-pool executor
+    so they do NOT block the async event loop.
+    """
+    loop = asyncio.get_event_loop()
     try:
         if settings.is_nim:
-            embedding = _embed_nim(state["clean_message"])
+            embedding = await loop.run_in_executor(None, _embed_nim, state["clean_message"])
         else:
-            embedding = _embed_gemini(state["clean_message"])
+            embedding = await loop.run_in_executor(None, _embed_gemini, state["clean_message"])
         return {"query_embedding": embedding}
     except Exception as e:
         logger.error(f"[BOT] embed failed: {e}")
@@ -141,16 +164,27 @@ def embed_node(state: BotState) -> dict:
 
 
 def _embed_nim(text: str) -> list:
-    """Single-query NIM embedding."""
-    from openai import OpenAI
-    client = OpenAI(base_url=settings.nim_base_url, api_key=settings.nim_embed_api_key)
-    response = client.embeddings.create(
-        model=settings.embedding_model,
-        input=[text],
-        encoding_format="float",
-        extra_body={"input_type": "query", "truncate": "END"},
-    )
-    return response.data[0].embedding
+    """Single-query NIM embedding via direct HTTP."""
+    import httpx
+    url = f"{settings.nim_base_url}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {settings.nim_embed_api_key or settings.nim_llm_api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
+        "input": [text],
+        "input_type": "query",
+        "encoding_format": "float",
+        "truncate": "END",
+    }
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(url, headers=headers, json=payload)
+        if not resp.is_success:
+            raise ValueError(f"NIM embed {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+    return data["data"][0]["embedding"]
 
 
 def _embed_gemini(text: str) -> list:
@@ -234,33 +268,69 @@ async def rerank_node(state: BotState) -> dict:
 
 
 def context_check_node(state: BotState) -> dict:
-    """Check if retrieved context is useful (distance threshold 0.7)."""
+    """Check if retrieved context is useful.
+    ChromaDB cosine distance is on a 0-2 scale.
+    Threshold 1.2 = anything up to 60% cosine distance passes.
+    Images bypass KB check — the image description IS the context.
+    """
+    message = state.get("clean_message", "")
+    has_image = "[Attached image:" in message or "Attached image" in message
+
+    if has_image:
+        # Image description is embedded in the message — always proceed to generate
+        logger.info("[BOT] context check → image message, bypassing KB requirement")
+        return {"has_image_context": True}
+
     dists = state.get("retrieved_distances", [])
     chunks = state.get("retrieved_chunks", [])
-    if not chunks or not dists or min(dists) > 0.7:
+    if not chunks or not dists or min(dists) > 1.2:
         logger.info(f"[BOT] context check → no useful context (dists={dists[:3]})")
         return {"done": True, "fallback_reason": "no_context"}
     return {}
 
 
-def generate_node(state: BotState) -> dict:
-    """Generate a grounded response using the configured provider (NIM or Gemini)."""
+async def generate_node(state: BotState) -> dict:
+    """Generate a grounded response using the configured provider (NIM or Gemini).
+
+    NOTE: Both _generate_nim and _generate_gemini are synchronous. We run them
+    in the thread-pool executor so they do NOT block the async event loop.
+    """
     lang_label = "Hindi" if state["language"] == "hi" else "English"
-    context = "\n\n".join(state["retrieved_chunks"])
-    prompt = (
-        f"You are a friendly customer service assistant.\n"
-        f"Answer ONLY based on the context provided below. "
-        f"Do NOT make up information not in the context.\n"
-        f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
-        f"Context:\n{context}\n\n"
-        f"Customer question: {state['clean_message']}\n\n"
-        f"Answer:"
-    )
+    chunks = state.get("retrieved_chunks", [])
+    has_image_context = state.get("has_image_context", False)
+
+    if chunks:
+        # Normal RAG: answer from KB context
+        context = "\n\n".join(chunks)
+        prompt = (
+            f"You are a friendly customer service assistant.\n"
+            f"Answer ONLY based on the context provided below. "
+            f"Do NOT make up information not in the context.\n"
+            f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
+            f"Context:\n{context}\n\n"
+            f"Customer question: {state['clean_message']}\n\n"
+            f"Answer:"
+        )
+    elif has_image_context:
+        # Image query: the image description is embedded in the message itself
+        prompt = (
+            f"You are a friendly solar energy sales assistant.\n"
+            f"A customer has sent an image with a question. "
+            f"The image has been analysed and the description is included in the message below.\n"
+            f"Answer the customer's question based on the image description and your solar expertise.\n"
+            f"Respond in {lang_label}. Be helpful, friendly and concise (2-4 sentences).\n\n"
+            f"Customer message with image: {state['clean_message']}\n\n"
+            f"Answer:"
+        )
+    else:
+        return {"done": True, "fallback_reason": "no_context"}
+
+    loop = asyncio.get_event_loop()
     try:
         if settings.is_nim:
-            response_text = _generate_nim(prompt)
+            response_text = await loop.run_in_executor(None, _generate_nim, prompt)
         else:
-            response_text = _generate_gemini(prompt)
+            response_text = await loop.run_in_executor(None, _generate_gemini, prompt)
         logger.info(f"[BOT] generated response ({len(response_text)} chars)")
         return {"response": response_text}
     except Exception as e:
@@ -307,21 +377,48 @@ def confidence_check_node(state: BotState) -> dict:
     return {"confidence_score": confidence, "flagged": flagged}
 
 
-def fallback_node(state: BotState) -> dict:
-    """Compose a polite fallback message in the detected language."""
+async def fallback_node(state: BotState) -> dict:
+    """Handle fallback: rate-limit gets a static message.
+    No-context gets a NIM/Gemini-powered general answer instead of a generic reply.
+
+    NOTE: LLM calls are synchronous — run them in executor to avoid blocking.
+    """
     lang = state.get("language", "en")
     reason = state.get("fallback_reason", "")
+
     if reason == "rate_limit":
         msg = RATE_LIMIT_MSGS.get(lang, RATE_LIMIT_MSGS["en"])
-    elif reason == "no_context":
+        return {"response": msg, "confidence_score": 0.0, "flagged": False}
+
+    if reason == "no_context":
+        # Try to answer from general knowledge instead of a static message
+        lang_label = "Hindi" if lang == "hi" else "English"
+        prompt = (
+            f"You are a friendly WhatsApp customer service assistant for a solar energy company.\n"
+            f"Answer the customer's question as helpfully as possible based on your general knowledge.\n"
+            f"If you don't know the specific answer, invite them to contact us for details.\n"
+            f"Respond in {lang_label}. Be concise (2-4 sentences). Do NOT start with 'Great question!'.\n\n"
+            f"Customer question: {state.get('clean_message', '')}\n\n"
+            f"Answer:"
+        )
+        loop = asyncio.get_event_loop()
+        try:
+            if settings.is_nim:
+                msg = await loop.run_in_executor(None, _generate_nim, prompt)
+            else:
+                msg = await loop.run_in_executor(None, _generate_gemini, prompt)
+            if msg:
+                logger.info("[BOT] fallback answered via general knowledge")
+                return {"response": msg, "confidence_score": 0.3, "flagged": True}
+        except Exception as e:
+            logger.warning(f"[BOT] fallback LLM call failed: {e}")
+
+        # Ultimate fallback: static message
         msg = UNANSWERED_MSGS.get(lang, UNANSWERED_MSGS["en"])
-    else:
-        msg = FALLBACK_MSGS.get(lang, FALLBACK_MSGS["en"])
-    return {
-        "response": msg,
-        "confidence_score": 0.0,
-        "flagged": True if reason == "no_context" else False,
-    }
+        return {"response": msg, "confidence_score": 0.0, "flagged": True}
+
+    msg = FALLBACK_MSGS.get(lang, FALLBACK_MSGS["en"])
+    return {"response": msg, "confidence_score": 0.0, "flagged": False}
 
 
 async def output_node(state: BotState) -> dict:

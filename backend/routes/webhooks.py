@@ -19,9 +19,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request, Response
 from sqlalchemy import select, update, func
 
-from core.database import get_db, get_db_context
+from core.database import get_db, get_db_context, AsyncSessionLocal
 from core.config import settings
 from models.models import BroadcastRecipient, Broadcast, Client
+from services.client_service import import_clients
 from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
 from services.broadcast_service import create_broadcast
@@ -53,6 +54,25 @@ GUPSHUP_STATUS_MAP = {
 
 
 # ─── POST /webhooks/gupshup/delivery ─────────────────────────────────────────
+
+
+def _detect_columns(df) -> dict:
+    """
+    TC-018 fix: Auto-detect common CSV column name variants so WhatsApp
+    CSV bulk import works even when the owner's file uses 'Name'/'Mobile'
+    instead of the expected 'name'/'phone' headers.
+    Falls back to positional columns if no recognisable variant is found.
+    """
+    cols = list(df.columns)
+    name_variants  = ["name", "Name", "full_name", "fullname", "customer_name", "customer"]
+    phone_variants = ["phone", "Phone", "mobile", "Mobile", "number", "Number", "contact", "Contact"]
+    email_variants = ["email", "Email", "e-mail", "E-mail", "mail"]
+
+    detected_name  = next((c for c in name_variants  if c in cols), cols[0] if cols else "name")
+    detected_phone = next((c for c in phone_variants if c in cols), cols[1] if len(cols) > 1 else "phone")
+    detected_email = next((c for c in email_variants if c in cols), None)
+
+    return {"name": detected_name, "phone": detected_phone, "email": detected_email}
 
 @router.post("/gupshup/delivery", status_code=200)
 async def gupshup_delivery_webhook(
@@ -235,18 +255,104 @@ async def whatsapp_inbound_webhook(
 
     logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]} media={bool(media_url)}")
 
-    # ── Owner broadcast trigger ───────────────────────────────────────────
+    # ── Owner command routing ─────────────────────────────────────────────
     if settings.owner_phone and sender_phone == settings.owner_phone:
-        # Detect SCHEDULE: prefix — e.g. "SCHEDULE: 2026-03-14 18:00 Your message here"
+        msg = message_text.strip()
+
+        # ── /help ─────────────────────────────────────────────────────────
+        if msg.lower() == "/help":
+            adapter = get_messaging_adapter()
+            await adapter.send_message(
+                phone=sender_phone,
+                message=(
+                    "🤖 *TwinAI Owner Bot — Help Guide*\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "📢 *BROADCAST* — Send to all clients now\n"
+                    "Format: `BROADCAST: <your message>`\n"
+                    "Example: _BROADCAST: 🎉 Flash sale today! 20% off all solar panels._\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "🕐 *SCHEDULE* — Send at a specific date & time (IST)\n"
+                    "Format: `SCHEDULE: YYYY-MM-DD HH:MM <your message>`\n"
+                    "Example: _SCHEDULE: 2026-03-25 10:00 New inverter stock is live!_\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "👤 *ADD CLIENT* — Add one client by phone\n"
+                    "Format: `ADD: <phone>, <Name>`\n"
+                    "Example: _ADD: 9876543210, Ravi Kumar_\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "🗑️ *REMOVE CLIENT* — Remove client by phone\n"
+                    "Format: `REMOVE: <phone>`\n"
+                    "Example: _REMOVE: 9876543210_\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "📋 *BULK IMPORT* — Send a CSV or Excel file\n"
+                    "Required columns: `name`, `phone`\n"
+                    "Optional column: `email`\n"
+                    "All imported clients will be opted-in automatically.\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "📚 *ADD TO KNOWLEDGE BASE* — Send a PDF or Word doc\n"
+                    "Caption = category: `products` / `offers` / `documents`\n"
+                    "Supported: PDF, DOCX, DOC, TXT\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "📊 *COMMANDS*\n"
+                    "• `/status` — Platform stats\n"
+                    "• `/clients` — Opted-in count\n"
+                    "• `/help` — This guide\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "🧪 *TEST THE BOT*\n"
+                    "Send any message without a prefix to test the RAG bot.\n"
+                    "Example: _what is the price of solar inverter?_"
+                ),
+            )
+            return Response(status_code=200, content="ok")
+
+        # ── /status ───────────────────────────────────────────────────────
+        if msg.lower() == "/status":
+            async with get_db_context() as db:
+                total_clients = (await db.execute(
+                    select(func.count()).where(Client.opted_in == True, Client.is_deleted == False)
+                )).scalar_one()
+                last_broadcast = (await db.execute(
+                    select(Broadcast.created_at).order_by(Broadcast.created_at.desc()).limit(1)
+                )).scalar_one_or_none()
+                lb_str = last_broadcast.strftime("%d-%b %H:%M UTC") if last_broadcast else "None yet"
+            adapter = get_messaging_adapter()
+            await adapter.send_message(
+                phone=sender_phone,
+                message=(
+                    f"📊 *TwinAI Status*\n\n"
+                    f"👥 Opted-in clients: *{total_clients}*\n"
+                    f"📤 Last broadcast: *{lb_str}*\n\n"
+                    f"Type `/help` to see all commands & formats."
+                ),
+            )
+            return Response(status_code=200, content="ok")
+
+        # ── /clients ──────────────────────────────────────────────────────
+        if msg.lower() == "/clients":
+            async with get_db_context() as db:
+                count = (await db.execute(
+                    select(func.count()).where(Client.opted_in == True, Client.is_deleted == False)
+                )).scalar_one()
+            adapter = get_messaging_adapter()
+            await adapter.send_message(phone=sender_phone, message=f"👥 Opted-in clients: {count}")
+            return Response(status_code=200, content="ok")
+
+        # ── SCHEDULE: <date> <time> <message> ─────────────────────────────
         schedule_match = re.match(
             r"(?i)^schedule:\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(.+)$",
-            message_text.strip(),
+            msg,
             re.DOTALL,
         )
         if schedule_match:
             date_str, time_str, broadcast_msg = schedule_match.groups()
             broadcast_msg = broadcast_msg.strip()
-            # Parse as IST and convert to UTC for Celery
             IST = ZoneInfo("Asia/Kolkata")
             try:
                 scheduled_dt_ist = datetime.strptime(
@@ -261,7 +367,7 @@ async def whatsapp_inbound_webhook(
                 )
                 return Response(status_code=200, content="ok")
 
-            logger.info(f"[BROADCAST] Scheduling broadcast for {scheduled_dt_ist}: {broadcast_msg[:40]}")
+            logger.info(f"[BROADCAST] Scheduling for {scheduled_dt_ist}: {broadcast_msg[:40]}")
             async with get_db_context() as db:
                 try:
                     result = await create_broadcast(
@@ -273,10 +379,8 @@ async def whatsapp_inbound_webhook(
                     )
                     broadcast_id = result["id"]
                     eligible_count = result["eligible_count"]
-                    # Dispatch Celery task at the scheduled UTC time
                     send_broadcast.apply_async(args=[broadcast_id], eta=scheduled_dt_utc)
-                    # Format confirmation in IST
-                    display_time = scheduled_dt_ist.strftime("%d-%b-%Y at %-I:%M %p")
+                    display_time = scheduled_dt_ist.strftime("%d-%b-%Y at %I:%M %p")
                     adapter = get_messaging_adapter()
                     preview = broadcast_msg[:60] + ("..." if len(broadcast_msg) > 60 else "")
                     await adapter.send_message(
@@ -286,50 +390,354 @@ async def whatsapp_inbound_webhook(
                             f"for {eligible_count} client(s).\n\"{preview}\""
                         ),
                     )
-                    logger.info(f"[BROADCAST] Scheduled broadcast {broadcast_id} for {display_time}")
+                    logger.info(f"[BROADCAST] Scheduled {broadcast_id} for {display_time}")
                 except Exception as exc:
                     logger.error(f"[BROADCAST] Failed to schedule: {exc}")
                     try:
                         adapter = get_messaging_adapter()
+                        await adapter.send_message(phone=sender_phone, message=f"❌ Scheduling failed: {str(exc)[:100]}")
+                    except Exception:
+                        pass
+            return Response(status_code=200, content="ok")
+
+        # ── BROADCAST with IMAGE/PDF — owner sends media + caption starts with "BROADCAST:" ──
+        # Detects: owner sends an image or document with caption "BROADCAST: <message>"
+        is_broadcast_media = (
+            media_url
+            and message_text.upper().startswith("BROADCAST:")
+        )
+        if is_broadcast_media:
+            broadcast_caption = message_text[len("BROADCAST:"):].strip()
+            # Determine media_type from Content-Type header
+            if "pdf" in media_type.lower():
+                bc_media_type = "document"
+                bc_filename = "product_catalogue.pdf"
+                file_ext = ".pdf"
+            else:
+                bc_media_type = "image"
+                bc_filename = "image.jpg"
+                file_ext = ".jpg"
+
+            # ── Download the media from Twilio and re-cache it publicly ────────
+            # Twilio stores inbound media behind auth — we must download + re-serve
+            # via our public ngrok URL so the outbound MediaUrl is accessible.
+            public_media_url = None
+            try:
+                import httpx, uuid as _uuid
+                uploads_dir = "/tmp/twinai_media"
+                import os as _os
+                _os.makedirs(uploads_dir, exist_ok=True)
+                file_name = f"{_uuid.uuid4().hex}{file_ext}"
+                save_path = f"{uploads_dir}/{file_name}"
+
+                async with httpx.AsyncClient(timeout=15.0) as hclient:
+                    dl = await hclient.get(
+                        media_url,
+                        auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                        follow_redirects=True,
+                    )
+                    dl.raise_for_status()
+                    with open(save_path, "wb") as f:
+                        f.write(dl.content)
+
+                # Build public ngrok URL — base URL is detected from the inbound request
+                base_url = str(request.base_url).rstrip("/")
+                public_media_url = f"{base_url}/media/{file_name}"
+                logger.info(f"[BROADCAST] Cached media → {save_path} | public URL: {public_media_url}")
+            except Exception as dl_exc:
+                logger.error(f"[BROADCAST] Failed to download/cache Twilio media: {dl_exc}")
+                # Fallback: try with the raw Twilio URL anyway (may not work in sandbox)
+                public_media_url = media_url
+
+            logger.info(
+                f"[BROADCAST] Owner triggered media broadcast: "
+                f"type={bc_media_type} url={public_media_url[:60]} caption={broadcast_caption[:40]}"
+            )
+            async with get_db_context() as db:
+                try:
+                    result = await create_broadcast(
+                        db=db,
+                        name=f"Media broadcast — {broadcast_caption[:30]}",
+                        message_template=broadcast_caption,
+                        channel="whatsapp",
+                        media_url=public_media_url,
+                        media_type=bc_media_type,
+                        media_filename=bc_filename,
+                    )
+                    broadcast_id = result["id"]
+                    eligible_count = result["eligible_count"]
+                    send_broadcast.delay(broadcast_id)
+                    adapter = get_messaging_adapter()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=(
+                            f"✅ Media broadcast queued for *{eligible_count}* client(s)!\n"
+                            f"📎 Type: {bc_media_type}\n"
+                            f"💬 Caption: \"{broadcast_caption[:60]}\""
+                        ),
+                    )
+                    logger.info(f"[BROADCAST] Media broadcast {broadcast_id} queued for {eligible_count} clients")
+                except Exception as exc:
+                    logger.error(f"[BROADCAST] Media broadcast failed: {exc}")
+                    try:
+                        adapter = get_messaging_adapter()
                         await adapter.send_message(
                             phone=sender_phone,
-                            message=f"❌ Scheduling failed: {str(exc)[:100]}",
+                            message=f"❌ Media broadcast failed: {str(exc)[:100]}"
                         )
                     except Exception:
                         pass
             return Response(status_code=200, content="ok")
 
-        # ── Immediate broadcast (no SCHEDULE: prefix) ─────────────────────
-        logger.info(f"[BROADCAST] Owner message — creating broadcast: {message_text[:60]}")
-        async with get_db_context() as db:
-            try:
-                result = await create_broadcast(
-                    db=db,
-                    name=f"WhatsApp broadcast {message_text[:30]}",
-                    message_template=message_text,
-                    channel="whatsapp",
-                )
-                broadcast_id = result["id"]
-                eligible_count = result["eligible_count"]
-                send_broadcast.delay(broadcast_id)
-                adapter = get_messaging_adapter()
-                preview = message_text[:60] + ("..." if len(message_text) > 60 else "")
-                await adapter.send_message(
-                    phone=sender_phone,
-                    message=f"✅ Broadcast queued for {eligible_count} client(s):\n\"{preview}\"",
-                )
-                logger.info(f"[BROADCAST] Queued broadcast {broadcast_id} for {eligible_count} clients")
-            except Exception as exc:
-                logger.error(f"[BROADCAST] Failed to create broadcast: {exc}")
+
+        # ── BROADCAST: <message> — explicit immediate text broadcast ────────────
+        broadcast_match = re.match(r"(?i)^broadcast:\s*(.+)$", msg, re.DOTALL)
+        if broadcast_match:
+            broadcast_msg = broadcast_match.group(1).strip()
+            logger.info(f"[BROADCAST] Owner triggered broadcast: {broadcast_msg[:60]}")
+            async with get_db_context() as db:
                 try:
+                    result = await create_broadcast(
+                        db=db,
+                        name=f"WhatsApp broadcast {broadcast_msg[:30]}",
+                        message_template=broadcast_msg,
+                        channel="whatsapp",
+                    )
+                    broadcast_id = result["id"]
+                    eligible_count = result["eligible_count"]
+                    send_broadcast.delay(broadcast_id)
                     adapter = get_messaging_adapter()
+                    preview = broadcast_msg[:60] + ("..." if len(broadcast_msg) > 60 else "")
                     await adapter.send_message(
                         phone=sender_phone,
-                        message=f"❌ Broadcast failed: {str(exc)[:100]}",
+                        message=f"✅ Broadcast queued for {eligible_count} client(s):\n\"{preview}\"",
+                    )
+                    logger.info(f"[BROADCAST] Queued {broadcast_id} for {eligible_count} clients")
+                except Exception as exc:
+                    logger.error(f"[BROADCAST] Failed to create broadcast: {exc}")
+                    try:
+                        adapter = get_messaging_adapter()
+                        await adapter.send_message(phone=sender_phone, message=f"❌ Broadcast failed: {str(exc)[:100]}")
+                    except Exception:
+                        pass
+            return Response(status_code=200, content="ok")
+
+
+        # ── ADD: +91XXXXXXXXXX, Name ─────────────────────────────────────
+        add_match = re.match(r"(?i)^add:\s*(\+?\d[\d\s\-]{7,15})\s*,\s*(.+)$", msg)
+        if add_match:
+            raw_phone, name = add_match.group(1).strip(), add_match.group(2).strip()
+            # Normalise phone: 10-digit Indian → +91
+            digits = re.sub(r"\D", "", raw_phone)
+            if len(digits) == 10:
+                phone = f"+91{digits}"
+            elif digits.startswith("91") and len(digits) == 12:
+                phone = f"+{digits}"
+            else:
+                phone = f"+{digits}" if not raw_phone.startswith("+") else raw_phone
+            adapter = get_messaging_adapter()
+            try:
+                async with AsyncSessionLocal() as db:
+                    existing = (await db.execute(
+                        select(Client).where(Client.phone == phone, Client.is_deleted == False)
+                    )).scalar_one_or_none()
+                    if existing:
+                        await adapter.send_message(
+                            phone=sender_phone,
+                            message=f"⚠️ Client already exists:\n👤 {existing.name} ({phone})",
+                        )
+                    else:
+                        client = Client(name=name, phone=phone, opted_in=True)
+                        db.add(client)
+                        await db.commit()
+                        await adapter.send_message(
+                            phone=sender_phone,
+                            message=f"✅ Client added & opted-in:\n👤 *{name}*\n📞 {phone}",
+                        )
+                        logger.info(f"[OWNER] Added client: {name} ({phone})")
+            except Exception as exc:
+                logger.error(f"[OWNER] ADD: failed: {exc}")
+                await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add client: {str(exc)[:120]}")
+            return Response(status_code=200, content="ok")
+
+        # ── REMOVE: +91XXXXXXXXXX ──────────────────────────────────────────
+        remove_match = re.match(r"(?i)^remove:\s*(\+?\d[\d\s\-]{7,15})$", msg)
+        if remove_match:
+            raw_phone = remove_match.group(1).strip()
+            digits = re.sub(r"\D", "", raw_phone)
+            if len(digits) == 10:
+                phone = f"+91{digits}"
+            elif digits.startswith("91") and len(digits) == 12:
+                phone = f"+{digits}"
+            else:
+                phone = f"+{digits}" if not raw_phone.startswith("+") else raw_phone
+            adapter = get_messaging_adapter()
+            try:
+                async with AsyncSessionLocal() as db:
+                    client = (await db.execute(
+                        select(Client).where(Client.phone == phone, Client.is_deleted == False)
+                    )).scalar_one_or_none()
+                    if not client:
+                        await adapter.send_message(
+                            phone=sender_phone,
+                            message=f"⚠️ No active client found for {phone}",
+                        )
+                    else:
+                        name = client.name
+                        client.is_deleted = True
+                        client.opted_in = False
+                        await db.commit()
+                        await adapter.send_message(
+                            phone=sender_phone,
+                            message=f"🗑️ Client removed:\n👤 *{name}* ({phone})",
+                        )
+                        logger.info(f"[OWNER] Removed client: {name} ({phone})")
+            except Exception as exc:
+                logger.error(f"[OWNER] REMOVE: failed: {exc}")
+                await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove client: {str(exc)[:120]}")
+            return Response(status_code=200, content="ok")
+
+        # ── Owner sends CSV/XLSX → bulk import clients ─────────────────────
+        CLIENT_SHEET_TYPES = {
+            "text/csv",
+            "application/csv",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        if media_url and media_type and media_type.lower() in CLIENT_SHEET_TYPES:
+            logger.info(f"[OWNER] Client spreadsheet received ({media_type})")
+            adapter = get_messaging_adapter()
+            try:
+                import httpx
+                from core.config import settings as app_settings
+                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
+                    if app_settings.messaging_provider == "twilio" and app_settings.twilio_account_sid:
+                        resp = await hclient.get(
+                            media_url,
+                            auth=(app_settings.twilio_account_sid, app_settings.twilio_auth_token),
+                        )
+                    else:
+                        resp = await hclient.get(media_url)
+                    resp.raise_for_status()
+                    file_bytes = resp.content
+
+                ext = ".xlsx" if "spreadsheetml" in media_type.lower() else ".csv"
+                filename = f"clients_import{ext}"
+
+                async with AsyncSessionLocal() as db:
+                    summary = await import_clients(
+                        db=db,
+                        content=file_bytes,
+                        filename=filename,
+                        column_mapping=_detect_columns(df),
+                        set_opted_in=True,
+                    )
+
+                imported = summary.get("imported", 0)
+                skipped = summary.get("skipped", 0)
+                total = summary.get("total_rows", 0)
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        f"✅ *Client import complete!*\n"
+                        f"📊 Total rows: *{total}*\n"
+                        f"✅ Imported: *{imported}*\n"
+                        f"⏭️ Skipped (duplicates/invalid): *{skipped}*\n\n"
+                        f"_All imported clients are opted-in._\n"
+                        f"CSV column names expected: `name`, `phone`, `email` (optional)"
+                    ),
+                )
+                logger.info(f"[OWNER] Client import: {imported} imported, {skipped} skipped")
+            except Exception as exc:
+                logger.error(f"[OWNER] Client import failed: {exc}")
+                try:
+                    await adapter.send_message(phone=sender_phone, message=f"❌ Import failed: {str(exc)[:150]}")
+                except Exception:
+                    pass
+            return Response(status_code=200, content="ok")
+
+        # ── Owner sends a document → ingest into Knowledge Base ───────────
+        INGESTABLE_TYPES = {
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+            "text/plain",
+            "text/markdown",
+        }
+        if media_url and media_type and media_type.lower() in INGESTABLE_TYPES:
+            logger.info(f"[OWNER] Document received: {media_type} — ingesting into KB")
+            adapter = get_messaging_adapter()
+            try:
+                # Download file from Twilio (requires Basic Auth)
+                import httpx
+                from core.config import settings as app_settings
+                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
+                    if app_settings.messaging_provider == "twilio" and app_settings.twilio_account_sid:
+                        resp = await hclient.get(
+                            media_url,
+                            auth=(app_settings.twilio_account_sid, app_settings.twilio_auth_token),
+                        )
+                    else:
+                        resp = await hclient.get(media_url)
+                    resp.raise_for_status()
+                    file_bytes = resp.content
+
+                # Infer filename from content-type
+                ext_map = {
+                    "application/pdf": ".pdf",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                    "application/msword": ".doc",
+                    "text/plain": ".txt",
+                    "text/markdown": ".md",
+                }
+                ext = ext_map.get(media_type.lower(), ".bin")
+                filename = f"owner_upload_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{ext}"
+
+                # Determine category from caption (default: "documents")
+                valid_categories = {"products", "offers", "documents", "broadcasts"}
+                caption_lower = (message_text or "").strip().lower()
+                category = caption_lower if caption_lower in valid_categories else "documents"
+
+                # Ingest into ChromaDB + Postgres
+                from services import knowledge_service
+                from core.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as db:
+                    result = await knowledge_service.ingest_document(
+                        db=db,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        category=category,
+                        valid_from=None,
+                        valid_until=None,
+                    )
+
+                chunks = result.get("chunks_indexed", "?")
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message=(
+                        f"✅ *Document ingested!*\n"
+                        f"📄 File: {filename}\n"
+                        f"📂 Category: *{category}*\n"
+                        f"🧩 Chunks indexed: *{chunks}*\n\n"
+                        f"_Tip: Send caption as `products`, `offers`, or `documents` to set category._"
+                    ),
+                )
+                logger.info(f"[OWNER] KB ingestion complete: {filename}, {chunks} chunks, category={category}")
+            except Exception as exc:
+                logger.error(f"[OWNER] KB ingestion failed: {exc}")
+                try:
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"❌ Failed to ingest document: {str(exc)[:150]}",
                     )
                 except Exception:
                     pass
-        return Response(status_code=200, content="ok")
+            return Response(status_code=200, content="ok")
+
+        # ── Everything else → owner tests the RAG bot ─────────────────────
+        logger.info(f"[OWNER] Routing to RAG bot for testing: {msg[:60]}")
+        # Fall through to the regular RAG bot section below
+
 
     # ── Regular client — RAG bot ──────────────────────────────────────────
     # If media attached, convert to text first

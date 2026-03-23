@@ -70,6 +70,54 @@ class TwilioAdapter(GupshupAdapter):
             "phone": phone,
         }
 
+    async def send_media_message(
+        self,
+        phone: str,
+        media_url: str,
+        media_type: str,
+        caption: str = "",
+        filename: str = "document.pdf",
+    ) -> dict:
+        """
+        Send an image or document via Twilio WhatsApp.
+        Twilio renders MediaUrl as inline image (image/*) or document attachment (application/pdf).
+        The Body acts as the caption shown below the media.
+        """
+        to = f"whatsapp:{phone}"
+        post_data = {
+            "From": self.from_number,
+            "To": to,
+            "MediaUrl": media_url,
+        }
+        if caption:
+            post_data["Body"] = caption
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.base_url,
+                data=post_data,
+                auth=(self.account_sid, self.auth_token),
+                timeout=10.0,
+            )
+        if response.status_code not in (200, 201):
+            logger.error(
+                f"[TWILIO] send_media_message failed "
+                f"status={response.status_code} "
+                f"body={response.text[:200]}"
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        logger.info(
+            f"[TWILIO] media sent ({media_type}) → {phone} "
+            f"sid={data.get('sid')} status={data.get('status')}"
+        )
+        return {
+            "status": data.get("status", "queued"),
+            "messageId": data.get("sid", ""),
+            "phone": phone,
+        }
+
     async def verify_webhook_signature(
         self, payload: bytes, signature: str
     ) -> bool:

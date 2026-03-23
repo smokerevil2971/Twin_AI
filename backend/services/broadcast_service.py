@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from fastapi import HTTPException
-import google.generativeai as genai
+from openai import OpenAI
 
 from core.config import settings
 from models.models import Broadcast, BroadcastRecipient, Client
@@ -35,9 +35,9 @@ def personalise(template: str, client: Client) -> str:
 
 async def ai_personalise(owner_message: str, client: Client) -> str:
     """
-    Use Gemini to generate a unique personalised message for each client
-    based on their name and preferred language.
-    Falls back to basic template substitution if Gemini fails.
+    Use NIM llama-4-maverick to generate a unique personalised message for
+    each client based on their name and preferred language.
+    Falls back to basic template substitution if NIM call fails.
     """
     lang_label = "Hindi" if client.language == "hi" else "English"
     prompt = (
@@ -56,15 +56,22 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
         f"Respond with ONLY the message text, nothing else."
     )
     try:
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.llm_model)
-        resp = model.generate_content(prompt)
-        text = (resp.text or "").strip()
+        nim_client = OpenAI(
+            base_url=settings.nim_base_url,
+            api_key=settings.nim_llm_api_key,
+        )
+        resp = nim_client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=256,
+            temperature=0.8,
+        )
+        text = (resp.choices[0].message.content or "").strip()
         if text:
-            logger.info(f"[BROADCAST] AI personalised for {client.name} ({lang_label})")
+            logger.info(f"[BROADCAST] NIM personalised for {client.name} ({lang_label})")
             return text
     except Exception as e:
-        logger.warning(f"[BROADCAST] Gemini personalisation failed for {client.name}: {e}")
+        logger.warning(f"[BROADCAST] NIM personalisation failed for {client.name}: {e}")
     # Fallback: basic template substitution
     return personalise(owner_message, client)
 
@@ -115,6 +122,9 @@ async def create_broadcast(
     language: str = "en",
     scheduled_at: Optional[datetime] = None,
     target_client_ids: Optional[list[uuid.UUID]] = None,
+    media_url: Optional[str] = None,
+    media_type: Optional[str] = None,      # 'image' | 'document'
+    media_filename: Optional[str] = None,  # label for document downloads
 ) -> dict:
     eligible = await get_eligible_clients(db, target_client_ids)
 
@@ -132,6 +142,9 @@ async def create_broadcast(
         language=language,
         status="draft",
         scheduled_at=scheduled_at,
+        media_url=media_url,
+        media_type=media_type,
+        media_filename=media_filename,
     )
     db.add(broadcast)
     await db.flush()

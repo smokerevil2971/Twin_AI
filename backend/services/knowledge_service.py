@@ -7,7 +7,7 @@ Pipeline:
 import uuid
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any
 
 import fitz                        # PyMuPDF
 from PIL import Image
@@ -37,7 +37,12 @@ CHUNK_OVERLAP = 50
 # ─── Text extraction ──────────────────────────────────────────────────────────
 
 def extract_text(file_bytes: bytes, filename: str) -> str:
-    """Extract raw text from PDF, image, or plain text file."""
+    """Extract raw text from PDF, image, or plain text file.
+
+    For PDFs: first tries native text extraction (fast, works for digital PDFs).
+    If the PDF is scanned/image-based and returns no text, falls back to
+    rendering each page as an image and running pytesseract OCR on it.
+    """
     ext = "." + filename.rsplit(".", 1)[-1].lower()
 
     if ext == ".pdf":
@@ -46,6 +51,23 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
             for page in doc:
                 text_parts.append(page.get_text())
         text = "\n".join(text_parts)
+
+        # Fallback: scanned / image-based PDF — render each page and OCR it
+        if not text.strip():
+            logger.info(f"[KB] '{filename}' has no selectable text — attempting OCR on pages")
+            ocr_parts = []
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+                for page_num, page in enumerate(doc):
+                    # Render page at 2x resolution for better OCR accuracy
+                    mat = fitz.Matrix(2.0, 2.0)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_bytes = pix.tobytes("png")
+                    image = Image.open(io.BytesIO(img_bytes))
+                    page_text = pytesseract.image_to_string(image)
+                    if page_text.strip():
+                        ocr_parts.append(page_text)
+                    logger.info(f"[KB] OCR page {page_num + 1}: {len(page_text)} chars")
+            text = "\n".join(ocr_parts)
 
     elif ext in {".png", ".jpg", ".jpeg", ".webp"}:
         image = Image.open(io.BytesIO(file_bytes))
@@ -58,10 +80,16 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
         raise HTTPException(400, f"Unsupported file type: {ext}")
 
     if not text.strip():
-        raise HTTPException(422, "No text could be extracted from the file.")
+        raise HTTPException(
+            422,
+            "No text could be extracted from the file. "
+            "If this is a scanned PDF, ensure the scan quality is clear. "
+            "You can also try uploading it as individual page images (.jpg/.png)."
+        )
 
     logger.info(f"[KB] Extracted {len(text)} chars from {filename}")
     return text
+
 
 
 # ─── Semantic chunking ────────────────────────────────────────────────────────
@@ -80,20 +108,41 @@ def chunk_text(text: str) -> list[str]:
 
 # ─── ChromaDB connection ──────────────────────────────────────────────────────
 
+# TC-012 / Minor M5 fix: Cache the ChromaDB HttpClient as a singleton so we
+# don't open a new TCP connection on every query call.
+# Note: chromadb.HttpClient is a callable factory in some chromadb versions,
+# so we use Optional[Any] to avoid a TypeError on annotation evaluation.
+_chroma_client: Optional[Any] = None
+
+
 def get_chroma_client() -> chromadb.HttpClient:
-    return chromadb.HttpClient(
-        host=settings.chroma_host,
-        port=settings.chroma_port,
-    )
+    global _chroma_client
+    if _chroma_client is None:
+        _chroma_client = chromadb.HttpClient(
+            host=settings.chroma_host,
+            port=settings.chroma_port,
+        )
+    return _chroma_client
 
 
 def get_chroma_collection() -> chromadb.Collection:
-    """Returns the single shared ChromaDB collection."""
-    client = get_chroma_client()
-    return client.get_or_create_collection(
-        name="knowledge_base",
-        metadata={"hnsw:space": "cosine"},
-    )
+    """Returns the single shared ChromaDB collection.
+
+    TC-012 fix: Raises HTTPException(503) if ChromaDB is unreachable so the
+    caller gets a clean error instead of a raw 500.
+    """
+    try:
+        client = get_chroma_client()
+        return client.get_or_create_collection(
+            name="knowledge_base",
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as e:
+        logger.error(f"[KB] ChromaDB connection failed: {e}")
+        raise HTTPException(
+            503,
+            "Knowledge base service is temporarily unavailable. Please try again shortly."
+        )
 
 
 def query_knowledge_base(
@@ -103,21 +152,30 @@ def query_knowledge_base(
     """
     Query ChromaDB for top-k chunks most similar to the query embedding.
     Only returns chunks where is_active == 'true'.
-    """
-    collection = get_chroma_collection()
-    count = collection.count()
-    if count == 0:
-        return {"documents": [], "distances": []}
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, count),
-        where={"is_active": "true"},
-        include=["documents", "distances"],
-    )
-    docs = results["documents"][0] if results["documents"] else []
-    dists = results["distances"][0] if results["distances"] else []
-    return {"documents": docs, "distances": dists}
+    TC-012 fix: Returns empty results gracefully if ChromaDB is unreachable
+    (the RAG bot will fall back to its no_context path rather than crashing).
+    """
+    try:
+        collection = get_chroma_collection()
+        count = collection.count()
+        if count == 0:
+            return {"documents": [], "distances": []}
+
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(n_results, count),
+            where={"is_active": "true"},
+            include=["documents", "distances"],
+        )
+        docs = results["documents"][0] if results["documents"] else []
+        dists = results["distances"][0] if results["distances"] else []
+        return {"documents": docs, "distances": dists}
+    except HTTPException:
+        raise  # re-raise clean 503 from get_chroma_collection
+    except Exception as e:
+        logger.error(f"[KB] ChromaDB query failed: {e}")
+        return {"documents": [], "distances": []}
 
 
 # ─── Embeddings (dual-provider) ───────────────────────────────────────────────
@@ -135,24 +193,36 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
-    """Embed via NVIDIA NIM nemoretriever endpoint (OpenAI-compatible)."""
-    from openai import OpenAI
-    client = OpenAI(
-        base_url=settings.nim_base_url,
-        api_key=settings.nim_embed_api_key,
-    )
+    """
+    Embed via NVIDIA NIM using direct HTTP (bypasses OpenAI SDK quirks).
+    Uses the LLM API key — NIM keys are universal across all models.
+    """
+    import httpx, json
+    url = f"{settings.nim_base_url}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {settings.nim_embed_api_key or settings.nim_llm_api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     embeddings = []
-    batch_size = 50   # NIM safe batch size
+    batch_size = 50
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        response = client.embeddings.create(
-            model=settings.embedding_model,
-            input=batch,
-            encoding_format="float",
-            extra_body={"input_type": "passage", "truncate": "END"},
-        )
-        embeddings.extend([item.embedding for item in response.data])
-    logger.info(f"[KB][NIM] Generated {len(embeddings)} embeddings via {settings.embedding_model}")
+        payload = {
+            "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
+            "input": batch,
+            "input_type": "passage",
+            "encoding_format": "float",
+            "truncate": "END",
+        }
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            if not resp.is_success:
+                logger.error(f"[KB][NIM] Embed error {resp.status_code}: {resp.text[:200]}")
+                resp.raise_for_status()
+            data = resp.json()
+        embeddings.extend([item["embedding"] for item in data["data"]])
+    logger.info(f"[KB][NIM] Generated {len(embeddings)} embeddings")
     return embeddings
 
 
@@ -196,9 +266,14 @@ async def ingest_document(
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(413, f"File exceeds {settings.max_upload_size_mb}MB limit.")
 
-    # Validate offers have dates
-    if category == "offers" and (not valid_from or not valid_until):
-        raise HTTPException(422, "Offer documents require both valid_from and valid_until.")
+    # Validate / default offers dates
+    if category == "offers":
+        from datetime import date
+        if not valid_from:
+            valid_from = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        if not valid_until:
+            today = date.today()
+            valid_until = datetime(today.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
     # Extract text
     text = extract_text(file_bytes, filename)

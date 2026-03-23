@@ -34,6 +34,10 @@ class CreateBroadcastRequest(BaseModel):
     language: str = "en"
     scheduled_at: Optional[datetime] = None
     target_client_ids: Optional[list[uuid.UUID]] = None
+    # ─── Media fields (optional) ──────────────────────────────────────────────
+    media_url: Optional[str] = None          # publicly accessible URL (image or PDF)
+    media_type: Optional[str] = None         # 'image' | 'document'
+    media_filename: Optional[str] = None     # friendly filename shown on document
 
 
 # ─── POST /broadcasts ─────────────────────────────────────────────────────────
@@ -51,6 +55,14 @@ async def create_broadcast(
     - Personalises message ({{name}}, {{1}}) per recipient
     - Pass scheduled_at to delay sending; omit for immediate send
     """
+    # Validate media_type if provided
+    if body.media_url and body.media_type not in (None, "image", "document"):
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=422,
+            detail="media_type must be 'image' or 'document' when media_url is provided."
+        )
+
     result = await broadcast_service.create_broadcast(
         db=db,
         name=body.name,
@@ -59,19 +71,51 @@ async def create_broadcast(
         language=body.language,
         scheduled_at=body.scheduled_at,
         target_client_ids=body.target_client_ids,
+        media_url=body.media_url,
+        media_type=body.media_type,
+        media_filename=body.media_filename,
     )
 
-    # Queue Celery task (scheduled or immediate)
+    # TC-015 fix: Validate scheduled_at before queuing.
+    # Previously, a past timestamp silently fired immediately with no user warning.
     broadcast_id = result["id"]
-    if body.scheduled_at and body.scheduled_at > datetime.now(timezone.utc):
-        send_broadcast.apply_async(
-            args=[broadcast_id],
-            eta=body.scheduled_at,
-        )
+    if body.scheduled_at:
+        # Normalise to UTC-aware for comparison
+        sched = body.scheduled_at
+        if sched.tzinfo is None:
+            from datetime import timezone as _tz
+            sched = sched.replace(tzinfo=_tz.utc)
+
+        now = datetime.now(timezone.utc)
+        min_lead_seconds = 5 * 60  # 5-minute minimum lead time
+
+        if sched <= now:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"scheduled_at must be in the future. "
+                    f"Provided: {body.scheduled_at.isoformat()}, "
+                    f"Server UTC now: {now.isoformat()}. "
+                    f"Please pick a future time."
+                ),
+            )
+        if (sched - now).total_seconds() < min_lead_seconds:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "scheduled_at must be at least 5 minutes in the future "
+                    "to allow time for review before sending."
+                ),
+            )
+
+        send_broadcast.apply_async(args=[broadcast_id], eta=sched)
     else:
         send_broadcast.delay(broadcast_id)
 
     return success_response(result, status_code=201)
+
 
 
 # ─── GET /broadcasts ──────────────────────────────────────────────────────────

@@ -32,8 +32,20 @@ def send_broadcast(self, broadcast_id: str):
     """
     Celery task — sends all pending recipients for a broadcast.
     Uses asyncio.run() to bridge sync Celery into async SQLAlchemy.
+
+    Retries up to 3 times (60s, 120s, 240s) on catastrophic failures
+    (e.g., DB down, unhandled exception in the async runner).
+    Per-recipient send failures are handled gracefully inside
+    _send_broadcast_async and do NOT trigger a task-level retry.
     """
-    asyncio.run(_send_broadcast_async(broadcast_id))
+    try:
+        asyncio.run(_send_broadcast_async(broadcast_id))
+    except Exception as exc:
+        logger.error(
+            f"[BROADCAST] Task failed for broadcast_id={broadcast_id}: {exc}. "
+            f"Attempt {self.request.retries + 1}/{self.max_retries + 1}."
+        )
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
 
 
 async def _send_broadcast_async(broadcast_id_str: str):
@@ -61,16 +73,34 @@ async def _send_broadcast_async(broadcast_id_str: str):
         )
         rows = (await db.execute(q)).all()
 
+        # Fetch broadcast media fields once
+        bc_row = await db.execute(select(Broadcast).where(Broadcast.id == broadcast_id))
+        broadcast = bc_row.scalar_one_or_none()
+        media_url = broadcast.media_url if broadcast else None
+        media_type = broadcast.media_type if broadcast else None
+        media_filename = (broadcast.media_filename or "document.pdf") if broadcast else "document.pdf"
+
         total = len(rows)
         sent = 0
         failed = 0
 
         for recipient, phone in rows:
             try:
-                result = await adapter.send_message(
-                    phone=phone,
-                    message=recipient.personalised_message or "",
-                )
+                if media_url and media_type:
+                    # Media broadcast — send image or document with caption
+                    result = await adapter.send_media_message(
+                        phone=phone,
+                        media_url=media_url,
+                        media_type=media_type,
+                        caption=recipient.personalised_message or "",
+                        filename=media_filename,
+                    )
+                else:
+                    # Text-only broadcast
+                    result = await adapter.send_message(
+                        phone=phone,
+                        message=recipient.personalised_message or "",
+                    )
                 await db.execute(
                     update(BroadcastRecipient)
                     .where(BroadcastRecipient.id == recipient.id)
@@ -132,24 +162,6 @@ async def _send_broadcast_async(broadcast_id_str: str):
                 logger.warning(f"[BROADCAST] Could not notify owner: {e}")
 
 
-@celery_app.task(name="tasks.knowledge_tasks.deactivate_expired_offers")
-def deactivate_expired_offers():
-    """Daily beat task — deactivates offers past their valid_until date."""
-    asyncio.run(_deactivate_expired_offers_async())
-
-
-async def _deactivate_expired_offers_async():
-    from models.models import Offer
-    AsyncSessionLocal = get_async_sessionmaker()
-    async with AsyncSessionLocal() as db:
-        now = datetime.now(timezone.utc)
-        result = await db.execute(
-            update(Offer)
-            .where(Offer.valid_until < now, Offer.is_active == True)
-            .values(is_active=False)
-        )
-        await db.commit()
-        logger.info(f"Deactivated {result.rowcount} expired offers")
 
 
 @celery_app.task(name="tasks.broadcast_tasks.send_flagged_digest")

@@ -31,12 +31,26 @@ RATE_LIMITED_MSG = (
 )
 
 
-async def download_media(url: str, account_sid: str, auth_token: str) -> bytes:
-    """Download Twilio media with Basic auth. Follows redirects (Twilio CDN uses them for audio)."""
+async def download_media(url: str, account_sid: str = "", auth_token: str = "") -> bytes:
+    """Download media from a URL. Passes Basic Auth only when Twilio credentials are provided.
+
+    TC-021 fix: Under Gupshup mode, Gupshup media URLs are public CDN links and
+    do NOT need authentication. Sending empty Twilio credentials caused 401/403 errors.
+    Auth is now only added when the provider is Twilio and credentials are set.
+    """
+    auth = (account_sid, auth_token) if (account_sid and auth_token) else None
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.get(url, auth=(account_sid, auth_token))
+        resp = await client.get(url, auth=auth)
         resp.raise_for_status()
         return resp.content
+
+
+def _get_media_auth() -> tuple[str, str]:
+    """Returns Twilio credentials only when messaging_provider is 'twilio'."""
+    if settings.messaging_provider == "twilio":
+        return settings.twilio_account_sid, settings.twilio_auth_token
+    return "", ""
+
 
 
 async def process_media(
@@ -69,11 +83,8 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
     """Describe image using NIM phi-4-multimodal or Gemini Vision."""
     logger.info(f"[MEDIA] Processing image: {content_type} via {settings.llm_provider}")
     try:
-        raw = await download_media(
-            media_url,
-            settings.twilio_account_sid,
-            settings.twilio_auth_token,
-        )
+        sid, token = _get_media_auth()
+        raw = await download_media(media_url, sid, token)
         b64 = base64.b64encode(raw).decode()
         mime_base = content_type.split(";")[0].strip()
 
@@ -143,11 +154,8 @@ async def _process_pdf(media_url: str) -> str:
     """Extract text from PDF using PyMuPDF (provider-independent)."""
     logger.info("[MEDIA] Processing PDF document")
     try:
-        raw = await download_media(
-            media_url,
-            settings.twilio_account_sid,
-            settings.twilio_auth_token,
-        )
+        sid, token = _get_media_auth()
+        raw = await download_media(media_url, sid, token)
         doc = fitz.open(stream=raw, filetype="pdf")
         pages_text = [page.get_text() for page in doc]
         full_text = "\n".join(pages_text).strip()
@@ -172,11 +180,8 @@ async def _process_audio(media_url: str, content_type: str) -> str:
     """Transcribe voice note using NIM phi-4-multimodal or Gemini audio."""
     logger.info(f"[MEDIA] Processing audio: {content_type} via {settings.llm_provider}")
     try:
-        raw = await download_media(
-            media_url,
-            settings.twilio_account_sid,
-            settings.twilio_auth_token,
-        )
+        sid, token = _get_media_auth()
+        raw = await download_media(media_url, sid, token)
         logger.info(f"[MEDIA] Audio downloaded: {len(raw)} bytes")
         b64 = base64.b64encode(raw).decode()
 
