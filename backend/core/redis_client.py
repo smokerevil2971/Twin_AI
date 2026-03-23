@@ -5,6 +5,7 @@ Thin wrapper around redis.asyncio.
 """
 from redis.asyncio import Redis, from_url
 from core.config import settings
+import json
 
 _redis: Redis | None = None
 
@@ -50,7 +51,35 @@ async def set_onboard_state(phone: str, state: str) -> None:
         await get_redis().set(f"onboard:{phone}", state, ex=ONBOARD_TTL)
     except Exception:
         pass
+async def get_conversation_history(phone: str) -> list[dict]:
+    """Return the last 3 turns of conversation history for this phone."""
+    try:
+        raw = await get_redis().get(f"chat_history:{phone}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return []
 
+
+async def add_conversation_history(phone: str, user_msg: str, bot_msg: str) -> None:
+    """Append a turn to the conversation history, keeping only the last 3 turns."""
+    try:
+        r = get_redis()
+        key = f"chat_history:{phone}"
+        raw = await r.get(key)
+        history = json.loads(raw) if raw else []
+        
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": bot_msg})
+        
+        # Keep only the last 6 messages (3 turns = 3 user + 3 bot)
+        if len(history) > 6:
+            history = history[-6:]
+            
+        await r.set(key, json.dumps(history), ex=3600)  # 1 hour TTL
+    except Exception:
+        pass
 
 async def clear_onboard_state(phone: str) -> None:
     """Delete onboarding state — client is fully onboarded."""

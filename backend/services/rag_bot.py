@@ -48,23 +48,29 @@ HINDI_RE = re.compile(r"[\u0900-\u097F]")
 # ─── Fallback messages ────────────────────────────────────────────────────────
 FALLBACK_MSGS = {
     "en": (
-        "I'm sorry, I can only assist with questions about our products and services. "
-        "For other queries, please contact us directly."
+        "I don't have that information right now. 🙏\n\n"
+        "Would you like to:\n"
+        "1️⃣ Speak to our team directly → Call +91-9075805070\n"
+        "2️⃣ Receive our product catalogue → Reply CATALOGUE\n"
+        "3️⃣ Ask something else about our products"
     ),
     "hi": (
-        "माफ़ करें, मैं केवल हमारे उत्पादों और सेवाओं के बारे में सहायता कर सकता हूँ। "
-        "अन्य प्रश्नों के लिए, कृपया हमसे सीधे संपर्क करें।"
+        "मेरे पास अभी वह जानकारी नहीं है। 🙏\n\n"
+        "क्या आप चाहेंगे:\n"
+        "1️⃣ हमारी टीम से सीधे बात करना → कॉल करें +91-9075805070\n"
+        "2️⃣ हमारा उत्पाद कैटलॉग प्राप्त करना → रिप्लाई करें CATALOGUE\n"
+        "3️⃣ हमारे उत्पादों के बारे में कुछ और पूछना"
     ),
 }
 
 UNANSWERED_MSGS = {
-    "en": "Great question! Our team will get back to you shortly. 🙏",
-    "hi": "बहुत अच्छा सवाल! हमारी टीम जल्द ही आपसे संपर्क करेगी। 🙏",
+    "en": "I don't have that information right now. 🙏\n\nWould you like to:\n1️⃣ Speak to our team directly → Call +91-9075805070\n2️⃣ Receive our product catalogue → Reply CATALOGUE",
+    "hi": "मेरे पास अभी वह जानकारी नहीं है। 🙏\n\nक्या आप चाहेंगे:\n1️⃣ हमारी टीम से सीधे बात करना → कॉल करें +91-9075805070\n2️⃣ हमारा उत्पाद कैटलॉग प्राप्त करना → रिप्लाई करें CATALOGUE",
 }
 
 RATE_LIMIT_MSGS = {
-    "en": "You've sent too many messages this hour. Please try again later.",
-    "hi": "आपने इस घंटे बहुत अधिक संदेश भेजे हैं। कृपया बाद में पुनः प्रयास करें।",
+    "en": "You're on a roll! 😄 We limit messages to keep response quality high.\nPlease try again in a little while, or call us directly at +91-9075805070.",
+    "hi": "आप बहुत तेज हैं! 😄 हमने प्रतिक्रिया की गुणवत्ता बनाए रखने के लिए संदेशों को सीमित किया है।\nकृपया थोड़ी देर में पुनः प्रयास करें, या सीधे हमें +91-9075805070 पर कॉल करें।",
 }
 
 
@@ -76,6 +82,7 @@ class BotState(TypedDict):
     raw_message: str
     clean_message: str
     language: str
+    chat_history: list
     query_embedding: list
     retrieved_chunks: list
     retrieved_distances: list
@@ -299,6 +306,13 @@ async def generate_node(state: BotState) -> dict:
     chunks = state.get("retrieved_chunks", [])
     has_image_context = state.get("has_image_context", False)
 
+    history_text = ""
+    for msg in state.get("chat_history", []):
+        role = "Customer" if msg["role"] == "user" else "Assistant"
+        history_text += f"{role} said: {msg['content']}\n"
+        
+    history_prompt = f"Previous conversation history with this customer:\n{history_text}\n" if history_text else ""
+
     if chunks:
         # Normal RAG: answer from KB context
         context = "\n\n".join(chunks)
@@ -308,18 +322,20 @@ async def generate_node(state: BotState) -> dict:
             f"Do NOT make up information not in the context.\n"
             f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
             f"Context:\n{context}\n\n"
-            f"Customer question: {state['clean_message']}\n\n"
+            f"{history_prompt}"
+            f"Current customer question: {state['clean_message']}\n\n"
             f"Answer:"
         )
     elif has_image_context:
         # Image query: the image description is embedded in the message itself
         prompt = (
-            f"You are a friendly solar energy sales assistant.\n"
+            f"You are a friendly customer service assistant.\n"
             f"A customer has sent an image with a question. "
             f"The image has been analysed and the description is included in the message below.\n"
-            f"Answer the customer's question based on the image description and your solar expertise.\n"
+            f"Answer the customer's question based on the image description and your product expertise.\n"
             f"Respond in {lang_label}. Be helpful, friendly and concise (2-4 sentences).\n\n"
-            f"Customer message with image: {state['clean_message']}\n\n"
+            f"{history_prompt}"
+            f"Current customer message with image: {state['clean_message']}\n\n"
             f"Answer:"
         )
     else:
@@ -428,6 +444,9 @@ async def output_node(state: BotState) -> dict:
     adapter = _get_adapter()
     try:
         await adapter.send_message(phone=state["phone"], message=response)
+        
+        from core.redis_client import add_conversation_history
+        await add_conversation_history(state["phone"], state["raw_message"], response)
     except Exception as e:
         logger.error(f"[BOT] send_message failed: {e}")
 
@@ -530,12 +549,16 @@ async def run_bot(
     Runs the full RAG pipeline and returns the final state.
     Call this from the inbound webhook handler.
     """
+    from core.redis_client import get_conversation_history
+    history = await get_conversation_history(phone)
+    
     initial: BotState = {
         "client_id": client_id,
         "phone": phone,
         "raw_message": raw_message,
         "clean_message": "",
         "language": "en",
+        "chat_history": history,
         "query_embedding": [],
         "retrieved_chunks": [],
         "retrieved_distances": [],

@@ -741,8 +741,14 @@ async def whatsapp_inbound_webhook(
 
     # ── Regular client — Onboarding + RAG bot ────────────────────────────
     # If media attached, convert to text first
+    sent_typing_indicator = False
     if media_url and media_type:
         logger.info(f"[MEDIA] Processing {media_type} from {sender_phone}")
+        adapter = get_messaging_adapter()
+        if media_type.startswith("image/"):
+            await adapter.send_message(phone=sender_phone, message="📸 Thanks for sending the image! Let me analyse it...")
+            sent_typing_indicator = True
+            
         processed = await process_media(
             media_url=media_url,
             content_type=media_type,
@@ -790,7 +796,7 @@ async def whatsapp_inbound_webhook(
             await adapter.send_message(
                 phone=sender_phone,
                 message=(
-                    "👋 *Welcome to Rakesh Telang!*\n\n"
+                    "👋 *Welcome to Devraj Traders!*\n\n"
                     "I'm your AI assistant. I can help you with:\n"
                     "• Product prices & availability 🏠\n"
                     "• Ongoing offers & discounts 🎁\n"
@@ -909,6 +915,13 @@ async def whatsapp_inbound_webhook(
 
         # ── Pass to RAG bot as normal ──────────────────────────────────────
         client_id = str(client.id)
+        
+        if not sent_typing_indicator:
+            await adapter.send_message(
+                phone=sender_phone,
+                message="Got your message! ⏳ Give me a moment..."
+            )
+            
         await run_bot(
             phone=sender_phone,
             raw_message=message_text,
