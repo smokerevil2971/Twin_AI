@@ -57,3 +57,7 @@ read_docx.py
 
 # ─── Office lock files ────────────────────────────────
 ~$*
+
+backend/recent_logs*.txt
+backend/celerybeat-schedule
+*.log
