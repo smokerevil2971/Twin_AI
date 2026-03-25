@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -57,8 +57,7 @@ async def create_broadcast(
     """
     # Validate media_type if provided
     if body.media_url and body.media_type not in (None, "image", "document"):
-        from fastapi import HTTPException as _HTTPException
-        raise _HTTPException(
+        raise HTTPException(
             status_code=422,
             detail="media_type must be 'image' or 'document' when media_url is provided."
         )
@@ -79,18 +78,17 @@ async def create_broadcast(
     # TC-015 fix: Validate scheduled_at before queuing.
     # Previously, a past timestamp silently fired immediately with no user warning.
     broadcast_id = result["id"]
-    if body.scheduled_at:
+    if body.scheduled_at is not None:
         # Normalise to UTC-aware for comparison
         sched = body.scheduled_at
+        assert sched is not None  # narrow Optional[datetime] → datetime for type checker
         if sched.tzinfo is None:
-            from datetime import timezone as _tz
-            sched = sched.replace(tzinfo=_tz.utc)
+            sched = sched.replace(tzinfo=timezone.utc)
 
         now = datetime.now(timezone.utc)
         min_lead_seconds = 5 * 60  # 5-minute minimum lead time
 
         if sched <= now:
-            from fastapi import HTTPException
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -101,7 +99,6 @@ async def create_broadcast(
                 ),
             )
         if (sched - now).total_seconds() < min_lead_seconds:
-            from fastapi import HTTPException
             raise HTTPException(
                 status_code=422,
                 detail=(

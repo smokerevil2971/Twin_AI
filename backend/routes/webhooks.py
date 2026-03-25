@@ -22,7 +22,7 @@ from sqlalchemy import select, update, func
 from core.database import get_db, get_db_context, AsyncSessionLocal
 from core.config import settings
 from models.models import BroadcastRecipient, Broadcast, Client
-from services.client_service import import_clients
+from services.client_service import import_clients, parse_upload_file, detect_column_mapping
 from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
 from services.broadcast_service import create_broadcast
@@ -62,23 +62,6 @@ GUPSHUP_STATUS_MAP = {
 # ─── POST /webhooks/gupshup/delivery ─────────────────────────────────────────
 
 
-def _detect_columns(df) -> dict:
-    """
-    TC-018 fix: Auto-detect common CSV column name variants so WhatsApp
-    CSV bulk import works even when the owner's file uses 'Name'/'Mobile'
-    instead of the expected 'name'/'phone' headers.
-    Falls back to positional columns if no recognisable variant is found.
-    """
-    cols = list(df.columns)
-    name_variants  = ["name", "Name", "full_name", "fullname", "customer_name", "customer"]
-    phone_variants = ["phone", "Phone", "mobile", "Mobile", "number", "Number", "contact", "Contact"]
-    email_variants = ["email", "Email", "e-mail", "E-mail", "mail"]
-
-    detected_name  = next((c for c in name_variants  if c in cols), cols[0] if cols else "name")
-    detected_phone = next((c for c in phone_variants if c in cols), cols[1] if len(cols) > 1 else "phone")
-    detected_email = next((c for c in email_variants if c in cols), None)
-
-    return {"name": detected_name, "phone": detected_phone, "email": detected_email}
 
 @router.post("/gupshup/delivery", status_code=200)
 async def gupshup_delivery_webhook(
@@ -154,7 +137,7 @@ async def gupshup_delivery_webhook(
             return Response(status_code=200, content="not_found")
 
         # Build update values
-        update_values = {"status": internal_status}
+        update_values: dict = {"status": internal_status}
         now = utcnow()
 
         if internal_status == "delivered" and not recipient.delivered_at:
@@ -250,7 +233,7 @@ async def whatsapp_inbound_webhook(
                 or payload.get("sender", {}).get("phone", "")
             )
             inner = payload.get("payload", {})
-            message_text = inner.get("text") or inner.get("message", "")
+            message_text = str(inner.get("text") or inner.get("message") or "")
     except Exception as exc:
         logger.warning(f"[WA WEBHOOK] Failed to parse body: {exc}")
         return Response(status_code=200, content="ok")
@@ -308,6 +291,7 @@ async def whatsapp_inbound_webhook(
                     "📊 *COMMANDS*\n"
                     "• `/status` — Platform stats\n"
                     "• `/clients` — Opted-in count\n"
+                    "• `/report` — Broadcast analytics\n"
                     "• `/catalogue= URL` — Set catalogue link\n"
                     "• `/help` — This guide\n\n"
 
@@ -349,6 +333,45 @@ async def whatsapp_inbound_webhook(
                 )).scalar_one()
             adapter = get_messaging_adapter()
             await adapter.send_message(phone=sender_phone, message=f"👥 Opted-in clients: {count}")
+            return Response(status_code=200, content="ok")
+
+        # ── /report ───────────────────────────────────────────────────────
+        if msg.lower() == "/report":
+            async with get_db_context() as db:
+                from models.models import Broadcast, BroadcastRecipient
+                stmt = select(Broadcast).order_by(Broadcast.created_at.desc()).limit(1)
+                result = await db.execute(stmt)
+                latest_broadcast = result.scalar_one_or_none()
+                
+                adapter = get_messaging_adapter()
+                if not latest_broadcast:
+                    await adapter.send_message(phone=sender_phone, message="No broadcasts found.")
+                    return Response(status_code=200, content="ok")
+                
+                stats_stmt = select(BroadcastRecipient.status, func.count(BroadcastRecipient.id)).where(
+                    BroadcastRecipient.broadcast_id == latest_broadcast.id
+                ).group_by(BroadcastRecipient.status)
+                stats_result = await db.execute(stats_stmt)
+                
+                stats = dict(stats_result.all())
+                
+                # Gupshup statuses progress sequentially, so 'delivered' implies 'sent' as well, but 
+                # depending on the webhook flow, statuses update exactly to the latest.
+                sent_count = stats.get("sent", 0) + stats.get("delivered", 0) + stats.get("read", 0)
+                delivered_count = stats.get("delivered", 0) + stats.get("read", 0)
+                read_count = stats.get("read", 0)
+                failed_count = stats.get("failed", 0)
+                
+                report_msg = (
+                    f"📊 *Last Broadcast Report*\n\n"
+                    f"🏷️ Name: {latest_broadcast.name}\n"
+                    f"📅 Date: {latest_broadcast.created_at.strftime('%d %b, %H:%M')}\n\n"
+                    f"📤 Sent: {sent_count}\n"
+                    f"✅ Delivered: {delivered_count}\n"
+                    f"👁️ Read: {read_count}\n"
+                    f"❌ Failed: {failed_count}"
+                )
+            await adapter.send_message(phone=sender_phone, message=report_msg)
             return Response(status_code=200, content="ok")
 
         # ── /catalogue ───────────────────────────────────────────────────
@@ -644,11 +667,13 @@ async def whatsapp_inbound_webhook(
                 filename = f"clients_import{ext}"
 
                 async with AsyncSessionLocal() as db:
+                    df = parse_upload_file(file_bytes, filename)
+                    col_map = detect_column_mapping(list(df.columns))
                     summary = await import_clients(
                         db=db,
                         content=file_bytes,
                         filename=filename,
-                        column_mapping=_detect_columns(df),
+                        column_mapping=col_map,
                         set_opted_in=True,
                     )
 
@@ -945,8 +970,7 @@ async def whatsapp_inbound_webhook(
         if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
             from core.redis_client import get_redis
             r = get_redis()
-            cached_url_bytes = await r.get("devraj_catalogue_url")
-            dynamic_url = cached_url_bytes.decode("utf-8") if cached_url_bytes else None
+            dynamic_url = await r.get("devraj_catalogue_url")
             
             final_url = dynamic_url or settings.catalogue_url
             

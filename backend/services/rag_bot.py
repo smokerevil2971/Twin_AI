@@ -83,6 +83,7 @@ class BotState(TypedDict):
     clean_message: str
     language: str
     chat_history: list
+    long_term_memory: list  # NEW — relevant past exchanges from DB
     query_embedding: list
     retrieved_chunks: list
     retrieved_distances: list
@@ -91,6 +92,7 @@ class BotState(TypedDict):
     flagged: bool
     fallback_reason: str   # "" | "rate_limit" | "injection" | "no_context"
     done: bool
+    enquiry_intent: bool
     _db: Any               # AsyncSession — passed through graph, not modified
 
 
@@ -177,6 +179,30 @@ async def embed_node(state: BotState) -> dict:
     except Exception as e:
         logger.error(f"[BOT] embed failed: {e}")
         return {"query_embedding": [], "done": True, "fallback_reason": "no_context"}
+
+
+async def memory_retrieve_node(state: BotState) -> dict:
+    """Search past conversations semantically using the current query embedding.
+
+    Uses the existing `conversations` table with the new `embedding` column.
+    Falls back gracefully (empty list) if DB is unavailable or no history exists.
+    This node runs after embed_node so query_embedding is already available.
+    """
+    from services.memory_service import search_memory
+    db = state.get("_db")
+    client_id = state.get("client_id")
+    embedding = state.get("query_embedding", [])
+
+    if not embedding or state.get("done"):
+        return {"long_term_memory": []}
+
+    memories = await search_memory(
+        client_id=client_id,
+        query_embedding=embedding,
+        db=db,
+        top_k=3,
+    )
+    return {"long_term_memory": memories}
 
 
 def _embed_nim(text: str) -> list:
@@ -322,6 +348,15 @@ async def generate_node(state: BotState) -> dict:
         
     history_prompt = f"Previous conversation history with this customer:\n{history_text}\n" if history_text else ""
 
+    # Long-term memory: relevant past exchanges retrieved from database
+    memory_text = ""
+    for mem in state.get("long_term_memory", []):
+        memory_text += f"Customer asked: {mem['user_message']}\nYou answered: {mem['bot_response']}\n\n"
+    memory_prompt = (
+        f"Relevant past conversations with this customer (from previous sessions):\n{memory_text}"
+        if memory_text else ""
+    )
+
     if chunks:
         # Normal RAG: answer from KB context
         context = "\n\n".join(chunks)
@@ -333,6 +368,7 @@ async def generate_node(state: BotState) -> dict:
             f"If you provide pricing or product details, politely append: 'Interested in placing an order? Reply *ORDER* and we'll connect you.'\n"
             f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
             f"Context:\n{context}\n\n"
+            f"{memory_prompt}"
             f"{history_prompt}"
             f"Current customer question: {state['clean_message']}\n\n"
             f"Answer:"
@@ -345,6 +381,7 @@ async def generate_node(state: BotState) -> dict:
             f"The image has been analysed and the description is included in the message below.\n"
             f"Answer the customer's question based on the image description and your product expertise.\n"
             f"Respond in {lang_label}. Be helpful, friendly and concise (2-4 sentences).\n\n"
+            f"{memory_prompt}"
             f"{history_prompt}"
             f"Current customer message with image: {state['clean_message']}\n\n"
             f"Answer:"
@@ -421,7 +458,20 @@ async def fallback_node(state: BotState) -> dict:
         try:
             adapter = _get_adapter()
             if settings.owner_phone:
-                owner_msg = f"🚨 *NEW ORDER LEAD* 🚨\nPhone: {state.get('phone')}\nClient responded to the order prompt! Please contact them to confirm quantities."
+                history = state.get("chat_history", [])
+                last_inquiry = "Unknown"
+                # Find the most recent message sent by the user before 'ORDER'
+                for msg_dict in reversed(history):
+                    if msg_dict.get("role") == "user":
+                        last_inquiry = msg_dict.get("content", "Unknown")
+                        break
+                        
+                owner_msg = (
+                    f"🚨 *NEW ORDER LEAD* 🚨\n"
+                    f"Phone: {state.get('phone')}\n\n"
+                    f"📝 *Last inquiry:* \"{last_inquiry}\"\n\n"
+                    f"Client responded to the order prompt! Please contact them."
+                )
                 await adapter.send_message(phone=settings.owner_phone, message=owner_msg)
                 logger.info(f"[BOT] Alerted owner about new order lead from {state.get('phone')}.")
         except Exception as e:
@@ -430,7 +480,8 @@ async def fallback_node(state: BotState) -> dict:
         return {
             "response": "Great! Our team has been notified and will contact you shortly to confirm your order details. 📞", 
             "confidence_score": 1.0, 
-            "flagged": False
+            "flagged": False,
+            "enquiry_intent": True
         }
 
     if reason == "no_context":
@@ -488,10 +539,22 @@ async def output_node(state: BotState) -> dict:
             language=state.get("language", "en"),
             confidence_score=state.get("confidence_score"),
             flagged=state.get("flagged", False),
+            enquiry_intent=state.get("enquiry_intent", False),
         )
         db.add(conv)
         await db.commit()
         logger.info(f"[BOT] conversation logged (flagged={conv.flagged})")
+
+        # Async best-effort: compute + store embedding for long-term memory
+        # Runs after commit so the row exists; failures are non-fatal
+        if state.get("client_id") and state.get("query_embedding"):
+            try:
+                from services.memory_service import embed_and_save
+                asyncio.create_task(
+                    embed_and_save(conv.id, state["raw_message"], db)
+                )
+            except Exception as e:
+                logger.warning(f"[BOT] embed_and_save task creation failed: {e}")
 
     return {}
 
@@ -514,7 +577,7 @@ def should_fallback_after_context(state: BotState) -> str:
 
 
 def should_fallback_after_embed(state: BotState) -> str:
-    return "fallback" if state.get("done") else "retrieve"
+    return "fallback" if state.get("done") else "memory_retrieve"
 
 
 def should_fallback_after_generate(state: BotState) -> str:
@@ -532,8 +595,9 @@ def build_rag_graph():
     g.add_node("detect_language", detect_language_node)
     g.add_node("injection_guard", injection_guard_node)
     g.add_node("embed", embed_node)
+    g.add_node("memory_retrieve", memory_retrieve_node)  # NEW — long-term memory
     g.add_node("retrieve", retrieve_node)
-    g.add_node("rerank", rerank_node)          # NEW — NIM reranker (no-op for Gemini)
+    g.add_node("rerank", rerank_node)
     g.add_node("context_check", context_check_node)
     g.add_node("generate", generate_node)
     g.add_node("confidence_check", confidence_check_node)
@@ -546,8 +610,9 @@ def build_rag_graph():
     g.add_conditional_edges("order_intent", should_fallback_after_order_intent)
     g.add_edge("detect_language", "injection_guard")
     g.add_conditional_edges("injection_guard", should_fallback_after_injection)
-    g.add_conditional_edges("embed", should_fallback_after_embed)
-    g.add_edge("retrieve", "rerank")           # retrieve → rerank → context_check
+    g.add_conditional_edges("embed", should_fallback_after_embed)  # embed → memory_retrieve
+    g.add_edge("memory_retrieve", "retrieve")                      # memory_retrieve → retrieve
+    g.add_edge("retrieve", "rerank")                               # retrieve → rerank → context_check
     g.add_edge("rerank", "context_check")
     g.add_conditional_edges("context_check", should_fallback_after_context)
     g.add_conditional_edges("generate", should_fallback_after_generate)
@@ -591,6 +656,7 @@ async def run_bot(
         "clean_message": "",
         "language": "en",
         "chat_history": history,
+        "long_term_memory": [],  # populated by memory_retrieve_node
         "query_embedding": [],
         "retrieved_chunks": [],
         "retrieved_distances": [],
@@ -599,6 +665,7 @@ async def run_bot(
         "flagged": False,
         "fallback_reason": "",
         "done": False,
+        "enquiry_intent": False,
         "_db": db,
     }
     final_state = await _rag_graph.ainvoke(initial)

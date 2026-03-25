@@ -10,6 +10,7 @@ from sqlalchemy import (
     String, Boolean, Float, Integer, Text, DateTime,
     ForeignKey, UniqueConstraint, Index, ARRAY
 )
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from core.database import Base
@@ -48,6 +49,8 @@ class Client(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     opted_in: Mapped[bool] = mapped_column(Boolean, default=False)
     language: Mapped[str] = mapped_column(String(10), default="en")
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tags: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -112,8 +115,11 @@ class Conversation(Base):
     language: Mapped[str] = mapped_column(String(10), default="en")
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    enquiry_intent: Mapped[bool] = mapped_column(Boolean, default=False)
     alert_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Long-term memory: vector embedding of the user message (768-dim for Gemini, 1024 for NIM)
+    embedding: Mapped[list | None] = mapped_column(Vector(768), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

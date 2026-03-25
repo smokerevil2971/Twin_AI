@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: twinai_db
     restart: unless-stopped
     environment:
@@ -23,6 +23,8 @@ services:
     restart: unless-stopped
     ports:
       - "6380:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -120,3 +122,4 @@ volumes:
   postgres_data:
   chroma_data:
   uploads_data:
+  redis_data:

@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 import pandas as pd
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
