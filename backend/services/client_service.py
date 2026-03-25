@@ -3,12 +3,12 @@ Client service — CSV/XLSX parsing, phone validation,
 bulk insert with deduplication, and CRUD operations.
 Multi-tenancy removed — single owner system.
 """
+import csv
 import io
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-import pandas as pd
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, or_
@@ -46,22 +46,44 @@ def detect_column_mapping(columns: list[str]) -> dict[str, str | None]:
     return result
 
 
-def parse_upload_file(content: bytes, filename: str) -> pd.DataFrame:
+def parse_upload_file(content: bytes, filename: str) -> list[dict]:
+    """
+    Parse a CSV or XLSX file into a list of row-dicts.
+    Replaces pandas to eliminate the heavy pandas dependency.
+    All string values; missing cells default to empty string.
+    """
     fname = filename.lower()
     if fname.endswith(".csv"):
-        return pd.read_csv(io.BytesIO(content), dtype=str).fillna("")
+        text = content.decode("utf-8-sig", errors="replace")  # handle BOM
+        reader = csv.DictReader(io.StringIO(text))
+        return [{k: (v or "") for k, v in row.items()} for row in reader]
     elif fname.endswith((".xlsx", ".xls")):
-        return pd.read_excel(io.BytesIO(content), dtype=str).fillna("")
+        try:
+            import openpyxl
+        except ImportError:
+            raise ValueError("openpyxl is required to read .xlsx files.")
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
+        result = []
+        for row in rows[1:]:
+            result.append({headers[i]: str(v) if v is not None else "" for i, v in enumerate(row)})
+        wb.close()
+        return result
     raise ValueError(f"Unsupported file type: {filename}. Use .csv or .xlsx only.")
 
 
 def get_upload_preview(content: bytes, filename: str) -> dict:
-    df = parse_upload_file(content, filename)
-    mapping = detect_column_mapping(list(df.columns))
+    rows = parse_upload_file(content, filename)
+    columns = list(rows[0].keys()) if rows else []
+    mapping = detect_column_mapping(columns)
     return {
-        "detected_columns": list(df.columns),
+        "detected_columns": columns,
         "mapping": mapping,
-        "row_count": len(df),
+        "row_count": len(rows),
         "mapping_complete": mapping["name"] is not None and mapping["phone"] is not None,
     }
 
@@ -73,23 +95,21 @@ async def import_clients(
     column_mapping: dict[str, str],
     set_opted_in: bool = False,
 ) -> dict:
-    df = parse_upload_file(content, filename)
+    rows = parse_upload_file(content, filename)
 
     name_col = column_mapping.get("name")
     phone_col = column_mapping.get("phone")
     email_col = column_mapping.get("email")
 
     # TC-007 fix: Validate that the mapped column names actually exist in the file.
-    # A wrong column name previously caused all rows to silently yield empty strings,
-    # resulting in 0 imports with no user-facing error.
-    df_cols = list(df.columns)
-    missing_cols = [v for v in [name_col, phone_col] if v and v not in df_cols]
+    file_cols = list(rows[0].keys()) if rows else []
+    missing_cols = [v for v in [name_col, phone_col] if v and v not in file_cols]
     if missing_cols:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Column(s) not found in uploaded file: {missing_cols}. "
-                f"Available columns are: {df_cols}. "
+                f"Available columns are: {file_cols}. "
                 f"Please check your column mapping and try again."
             )
         )
@@ -102,20 +122,21 @@ async def import_clients(
     valid_rows: list[dict] = []
     seen_in_file: set[str] = set()
 
-    for idx, row in df.iterrows():
+    for idx, row in enumerate(rows):
         raw_phone = row.get(phone_col, "")
         phone = normalise_phone(raw_phone)
         name = str(row.get(name_col, "")).strip()
         email = str(row.get(email_col, "")).strip() if email_col else None
 
+        row_num = idx + 2  # 1-based + header row
         if not phone:
-            skipped_invalid.append({"row": idx + 2, "phone": raw_phone, "reason": "invalid phone"})
+            skipped_invalid.append({"row": row_num, "phone": raw_phone, "reason": "invalid phone"})
             continue
         if not name:
-            skipped_invalid.append({"row": idx + 2, "phone": phone, "reason": "missing name"})
+            skipped_invalid.append({"row": row_num, "phone": phone, "reason": "missing name"})
             continue
         if phone in seen_in_file:
-            skipped_duplicates.append({"row": idx + 2, "phone": phone, "reason": "duplicate in file"})
+            skipped_duplicates.append({"row": row_num, "phone": phone, "reason": "duplicate in file"})
             continue
 
         seen_in_file.add(phone)

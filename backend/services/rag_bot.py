@@ -46,31 +46,50 @@ BLOCKED_TOPICS = [
 HINDI_RE = re.compile(r"[\u0900-\u097F]")
 
 # ─── Fallback messages ────────────────────────────────────────────────────────
+# Support phone is loaded from config so it never needs to be hardcoded.
+_SUPPORT_PHONE = settings.support_phone or settings.owner_phone
+_CALL_CTA_EN = f" → Call {_SUPPORT_PHONE}" if _SUPPORT_PHONE else ""
+_CALL_CTA_HI = f" → कॉल करें {_SUPPORT_PHONE}" if _SUPPORT_PHONE else ""
+
 FALLBACK_MSGS = {
     "en": (
         "I don't have that information right now. 🙏\n\n"
         "Would you like to:\n"
-        "1️⃣ Speak to our team directly → Call +91-9075805070\n"
+        f"1️⃣ Speak to our team directly{_CALL_CTA_EN}\n"
         "2️⃣ Receive our product catalogue → Reply CATALOGUE\n"
         "3️⃣ Ask something else about our products"
     ),
     "hi": (
         "मेरे पास अभी वह जानकारी नहीं है। 🙏\n\n"
         "क्या आप चाहेंगे:\n"
-        "1️⃣ हमारी टीम से सीधे बात करना → कॉल करें +91-9075805070\n"
+        f"1️⃣ हमारी टीम से सीधे बात करना{_CALL_CTA_HI}\n"
         "2️⃣ हमारा उत्पाद कैटलॉग प्राप्त करना → रिप्लाई करें CATALOGUE\n"
         "3️⃣ हमारे उत्पादों के बारे में कुछ और पूछना"
     ),
 }
 
 UNANSWERED_MSGS = {
-    "en": "I don't have that information right now. 🙏\n\nWould you like to:\n1️⃣ Speak to our team directly → Call +91-9075805070\n2️⃣ Receive our product catalogue → Reply CATALOGUE",
-    "hi": "मेरे पास अभी वह जानकारी नहीं है। 🙏\n\nक्या आप चाहेंगे:\n1️⃣ हमारी टीम से सीधे बात करना → कॉल करें +91-9075805070\n2️⃣ हमारा उत्पाद कैटलॉग प्राप्त करना → रिप्लाई करें CATALOGUE",
+    "en": (
+        "I don't have that information right now. 🙏\n\nWould you like to:\n"
+        f"1️⃣ Speak to our team directly{_CALL_CTA_EN}\n"
+        "2️⃣ Receive our product catalogue → Reply CATALOGUE"
+    ),
+    "hi": (
+        "मेरे पास अभी वह जानकारी नहीं है। 🙏\n\nक्या आप चाहेंगे:\n"
+        f"1️⃣ हमारी टीम से सीधे बात करना{_CALL_CTA_HI}\n"
+        "2️⃣ हमारा उत्पाद कैटलॉग प्राप्त करना → रिप्लाई करें CATALOGUE"
+    ),
 }
 
 RATE_LIMIT_MSGS = {
-    "en": "You're on a roll! 😄 We limit messages to keep response quality high.\nPlease try again in a little while, or call us directly at +91-9075805070.",
-    "hi": "आप बहुत तेज हैं! 😄 हमने प्रतिक्रिया की गुणवत्ता बनाए रखने के लिए संदेशों को सीमित किया है।\nकृपया थोड़ी देर में पुनः प्रयास करें, या सीधे हमें +91-9075805070 पर कॉल करें।",
+    "en": (
+        f"You're on a roll! 😄 We limit messages to keep response quality high.\n"
+        f"Please try again in a little while{', or call us directly at ' + _SUPPORT_PHONE if _SUPPORT_PHONE else '.'}"
+    ),
+    "hi": (
+        f"आप बहुत तेज हैं! 😄 हमने प्रतिक्रिया की गुणवत्ता बनाए रखने के लिए संदेशों को सीमित किया है।\n"
+        f"कृपया थोड़ी देर में पुनः प्रयास करें{', या सीधे हमें ' + _SUPPORT_PHONE + ' पर कॉल करें।' if _SUPPORT_PHONE else '।'}"
+    ),
 }
 
 

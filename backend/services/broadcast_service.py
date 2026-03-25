@@ -2,6 +2,7 @@
 Broadcast service — CRUD, eligibility checks, personalisation, delivery stats.
 Multi-tenancy removed — single owner system.
 """
+import asyncio
 import uuid
 import csv
 import io
@@ -11,7 +12,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from fastapi import HTTPException
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from core.config import settings
 from models.models import Broadcast, BroadcastRecipient, Client
@@ -37,6 +38,7 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
     """
     Use NIM llama-4-maverick to generate a unique personalised message for
     each client based on their name and preferred language.
+    Uses AsyncOpenAI so the HTTP call does NOT block the event loop.
     Falls back to basic template substitution if NIM call fails.
     """
     lang_label = "Hindi" if client.language == "hi" else "English"
@@ -56,11 +58,12 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
         f"Respond with ONLY the message text, nothing else."
     )
     try:
-        nim_client = OpenAI(
+        # AsyncOpenAI: non-blocking HTTP — does not freeze the event loop
+        nim_client = AsyncOpenAI(
             base_url=settings.nim_base_url,
             api_key=settings.nim_llm_api_key,
         )
-        resp = nim_client.chat.completions.create(
+        resp = await nim_client.chat.completions.create(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=256,
@@ -149,16 +152,21 @@ async def create_broadcast(
     db.add(broadcast)
     await db.flush()
 
-    # Build recipients with AI-personalised messages
-    recipients = []
-    for c in eligible:
-        msg = await ai_personalise(message_template, c)
-        recipients.append(BroadcastRecipient(
+    # Build recipients with AI-personalised messages — run all concurrently via gather
+    # This avoids N sequential blocking HTTP calls to the NIM API.
+    personalised_msgs = await asyncio.gather(
+        *[ai_personalise(message_template, c) for c in eligible],
+        return_exceptions=False,
+    )
+    recipients = [
+        BroadcastRecipient(
             broadcast_id=broadcast.id,
             client_id=c.id,
             personalised_message=msg,
             status="pending",
-        ))
+        )
+        for c, msg in zip(eligible, personalised_msgs)
+    ]
     db.add_all(recipients)
     await db.commit()
     await db.refresh(broadcast)

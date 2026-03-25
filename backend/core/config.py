@@ -72,6 +72,8 @@ class Settings(BaseSettings):
 
     # Owner
     owner_phone: str = ""
+    # Support contact shown to clients in fallback RAG bot messages
+    support_phone: str = ""
 
     # Broadcast
     broadcast_cooldown_hours: int = 1

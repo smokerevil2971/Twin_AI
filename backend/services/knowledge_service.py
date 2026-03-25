@@ -4,6 +4,7 @@ Knowledge Base ingestion service — Phase 3.1
 Pipeline:
   file bytes → extract text → chunk → embed (NIM or Gemini) → store (ChromaDB) → record (Postgres)
 """
+import asyncio
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -275,17 +276,25 @@ async def ingest_document(
             today = date.today()
             valid_until = datetime(today.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
-    # Extract text
-    text = extract_text(file_bytes, filename)
+    # Extract text — CPU-bound (PyMuPDF + pytesseract OCR).
+    # Run in thread pool to avoid blocking the async event loop.
+    try:
+        text = await asyncio.to_thread(extract_text, file_bytes, filename)
+    except HTTPException:
+        raise  # re-raise clean 400/422 from extract_text
+    except Exception as e:
+        logger.error(f"[KB] Text extraction failed: {e}")
+        raise HTTPException(422, f"Could not extract text from file: {str(e)}")
 
-    # Chunk
+    # Chunk (fast, in-process — no threading needed)
     chunks = chunk_text(text)
     if not chunks:
         raise HTTPException(422, "File produced no usable text chunks.")
 
-    # Embed
+    # Embed — synchronous HTTP calls to NIM/Gemini.
+    # Run in thread pool to avoid blocking the async event loop.
     try:
-        embeddings = embed_texts(chunks)
+        embeddings = await asyncio.to_thread(embed_texts, chunks)
     except Exception as e:
         logger.error(f"[KB] Embedding failed: {e}")
         raise HTTPException(502, f"Embedding service error: {str(e)}")
