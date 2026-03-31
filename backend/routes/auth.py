@@ -20,26 +20,7 @@ from models.models import Owner
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-# ─── Request schemas ──────────────────────────────────────────────────────────
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class RegisterRequest(BaseModel):
-    business_name: str
-    email: str
-    password: str
-
-
-class UpdateMeRequest(BaseModel):
-    business_name: Optional[str] = None
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+from models.schemas import LoginRequest, RegisterRequest, UpdateMeRequest, ChangePasswordRequest
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

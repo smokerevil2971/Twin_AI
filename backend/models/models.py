@@ -23,7 +23,7 @@ def utcnow():
 # ─── Owner (single business owner — replaces Tenant) ─────────────────────────
 
 class Owner(Base):
-    __tablename__ = "owner"
+    __tablename__ = "owners"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)

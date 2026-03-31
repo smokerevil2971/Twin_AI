@@ -5,6 +5,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 import io, csv
+from models.schemas import (
+    ColumnMapping,
+    ImportConfirmRequest,
+    UpdateClientRequest,
+    BulkOptInRequest,
+)
 
 from core.database import get_db
 from core.security import get_current_user
@@ -50,16 +56,7 @@ async def preview_upload(
 
 # ─── Confirm import (with column mapping confirmed by operator) ───────────────
 
-class ColumnMapping(BaseModel):
-    name: str
-    phone: str
-    email: Optional[str] = None
 
-
-class ImportConfirmRequest(BaseModel):
-    column_mapping: ColumnMapping
-    set_opted_in: bool = False
-    opt_in_confirmed: bool = False   # operator must tick consent checkbox
 
 
 @router.post("/upload", status_code=201)
@@ -147,11 +144,7 @@ async def get_clients(
 
 # ─── Update client ────────────────────────────────────────────────────────────
 
-class UpdateClientRequest(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    opted_in: Optional[bool] = None
-    language: Optional[str] = None
+
 
 
 @router.patch("/{client_id}")
@@ -181,8 +174,7 @@ async def delete_client(
 
 # ─── Bulk opt-in ──────────────────────────────────────────────────────────────
 
-class BulkOptInRequest(BaseModel):
-    confirmed: bool  # operator must explicitly set True
+
 
 
 @router.post("/bulk-opt-in")

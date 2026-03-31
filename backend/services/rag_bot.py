@@ -9,6 +9,7 @@ Pipeline:
 Provider switch: set LLM_PROVIDER=nim or LLM_PROVIDER=gemini in .env
 Each node receives the full BotState dict and returns a partial update.
 """
+
 import re
 import asyncio
 import logging
@@ -34,12 +35,28 @@ MAX_MSGS_PER_HOUR = 20
 # were triggering on legitimate solar queries like "error code E07" or
 # "how to program my inverter". Replaced with precise multi-word phrases.
 BLOCKED_TOPICS = [
-    "politics", "news", "cricket", "weather",
-    "write code", "write a program", "write a script",
-    "hacking", "how to hack", "jailbreak",
-    "tell me a joke", "joke", "poem", "write a poem",
-    "recipe", "medicine", "doctor", "diagnosis",
-    "stock market", "investment advice", "crypto", "bitcoin",
+    "politics",
+    "news",
+    "cricket",
+    "weather",
+    "write code",
+    "write a program",
+    "write a script",
+    "hacking",
+    "how to hack",
+    "jailbreak",
+    "tell me a joke",
+    "joke",
+    "poem",
+    "write a poem",
+    "recipe",
+    "medicine",
+    "doctor",
+    "diagnosis",
+    "stock market",
+    "investment advice",
+    "crypto",
+    "bitcoin",
 ]
 
 # ─── Hindi Unicode range ──────────────────────────────────────────────────────
@@ -95,6 +112,7 @@ RATE_LIMIT_MSGS = {
 
 # ─── State ────────────────────────────────────────────────────────────────────
 
+
 class BotState(TypedDict):
     client_id: Optional[str]
     phone: str
@@ -109,18 +127,21 @@ class BotState(TypedDict):
     response: str
     confidence_score: float
     flagged: bool
-    fallback_reason: str   # "" | "rate_limit" | "injection" | "no_context"
+    fallback_reason: str  # "" | "rate_limit" | "injection" | "no_context"
     done: bool
     enquiry_intent: bool
-    _db: Any               # AsyncSession — passed through graph, not modified
+    _db: Any  # AsyncSession — passed through graph, not modified
 
 
 # ─── Nodes ────────────────────────────────────────────────────────────────────
 
+
 def sanitise_node(state: BotState) -> dict:
     """Strip HTML, script tags, collapse whitespace, truncate to 1000 chars."""
     text = state["raw_message"]
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(
+        r"<script[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL
+    )
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"[^\w\s,.?!।\-'\"@\u0900-\u097F]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -191,9 +212,13 @@ async def embed_node(state: BotState) -> dict:
     loop = asyncio.get_event_loop()
     try:
         if settings.is_nim:
-            embedding = await loop.run_in_executor(None, _embed_nim, state["clean_message"])
+            embedding = await loop.run_in_executor(
+                None, _embed_nim, state["clean_message"]
+            )
         else:
-            embedding = await loop.run_in_executor(None, _embed_gemini, state["clean_message"])
+            embedding = await loop.run_in_executor(
+                None, _embed_gemini, state["clean_message"]
+            )
         return {"query_embedding": embedding}
     except Exception as e:
         logger.error(f"[BOT] embed failed: {e}")
@@ -208,6 +233,7 @@ async def memory_retrieve_node(state: BotState) -> dict:
     This node runs after embed_node so query_embedding is already available.
     """
     from services.memory_service import search_memory
+
     db = state.get("_db")
     client_id = state.get("client_id")
     embedding = state.get("query_embedding", [])
@@ -227,6 +253,7 @@ async def memory_retrieve_node(state: BotState) -> dict:
 def _embed_nim(text: str) -> list:
     """Single-query NIM embedding via direct HTTP."""
     import httpx
+
     url = f"{settings.nim_base_url}/embeddings"
     headers = {
         "Authorization": f"Bearer {settings.nim_embed_api_key or settings.nim_llm_api_key}",
@@ -251,6 +278,7 @@ def _embed_nim(text: str) -> list:
 def _embed_gemini(text: str) -> list:
     """Single-query Gemini embedding."""
     import google.generativeai as genai
+
     genai.configure(api_key=settings.gemini_api_key)
     result = genai.embed_content(
         model=settings.embedding_model,
@@ -261,12 +289,12 @@ def _embed_gemini(text: str) -> list:
 
 
 def retrieve_node(state: BotState) -> dict:
-    """Query ChromaDB for top-5 relevant chunks."""
+    """Query ChromaDB for top-15 relevant chunks."""
     if not state.get("query_embedding"):
         return {"retrieved_chunks": [], "retrieved_distances": []}
     results = query_knowledge_base(
         query_embedding=state["query_embedding"],
-        n_results=5,
+        n_results=15,
     )
     return {
         "retrieved_chunks": results["documents"],
@@ -308,14 +336,18 @@ async def rerank_node(state: BotState) -> dict:
             return {}
 
         # Reorder chunks and distances by reranker score (highest first)
-        sorted_rankings = sorted(rankings, key=lambda x: x.get("logit", 0), reverse=True)
+        sorted_rankings = sorted(
+            rankings, key=lambda x: x.get("logit", 0), reverse=True
+        )
         reranked_chunks = []
         reranked_distances = []
         for rank in sorted_rankings:
             idx = rank.get("index", 0)
             if idx < len(chunks):
                 reranked_chunks.append(chunks[idx])
-                reranked_distances.append(distances[idx] if idx < len(distances) else 1.0)
+                reranked_distances.append(
+                    distances[idx] if idx < len(distances) else 1.0
+                )
 
         logger.info(f"[BOT][NIM] reranked {len(reranked_chunks)} chunks")
         return {
@@ -364,8 +396,12 @@ async def generate_node(state: BotState) -> dict:
     for msg in state.get("chat_history", []):
         role = "Customer" if msg["role"] == "user" else "Assistant"
         history_text += f"{role} said: {msg['content']}\n"
-        
-    history_prompt = f"Previous conversation history with this customer:\n{history_text}\n" if history_text else ""
+
+    history_prompt = (
+        f"Previous conversation history with this customer:\n{history_text}\n"
+        if history_text
+        else ""
+    )
 
     # Long-term memory: relevant past exchanges retrieved from database
     memory_text = ""
@@ -373,7 +409,8 @@ async def generate_node(state: BotState) -> dict:
         memory_text += f"Customer asked: {mem['user_message']}\nYou answered: {mem['bot_response']}\n\n"
     memory_prompt = (
         f"Relevant past conversations with this customer (from previous sessions):\n{memory_text}"
-        if memory_text else ""
+        if memory_text
+        else ""
     )
 
     if chunks:
@@ -385,7 +422,8 @@ async def generate_node(state: BotState) -> dict:
             f"Do NOT make up information not in the context.\n"
             f"When quoting prices, ALWAYS include the Unit of measurement, Minimum Order Quantity (MOQ), and GST details if they are present in the context.\n"
             f"If you provide pricing or product details, politely append: 'Interested in placing an order? Reply *ORDER* and we'll connect you.'\n"
-            f"Respond in {lang_label}. Be concise (2-4 sentences).\n\n"
+            f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences. Structure your response to be easy to read.\n"
+            f"Respond in {lang_label}. Be concise.\n\n"
             f"Context:\n{context}\n\n"
             f"{memory_prompt}"
             f"{history_prompt}"
@@ -399,7 +437,8 @@ async def generate_node(state: BotState) -> dict:
             f"A customer has sent an image with a question. "
             f"The image has been analysed and the description is included in the message below.\n"
             f"Answer the customer's question based on the image description and your product expertise.\n"
-            f"Respond in {lang_label}. Be helpful, friendly and concise (2-4 sentences).\n\n"
+            f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences. Structure your response to be easy to read.\n"
+            f"Respond in {lang_label}. Be helpful, friendly and concise.\n\n"
             f"{memory_prompt}"
             f"{history_prompt}"
             f"Current customer message with image: {state['clean_message']}\n\n"
@@ -424,6 +463,7 @@ async def generate_node(state: BotState) -> dict:
 def _generate_nim(prompt: str) -> str:
     """Generate via NVIDIA NIM (OpenAI-compatible chat completions)."""
     from openai import OpenAI
+
     client = OpenAI(base_url=settings.nim_base_url, api_key=settings.nim_llm_api_key)
     resp = client.chat.completions.create(
         model=settings.llm_model,
@@ -437,6 +477,7 @@ def _generate_nim(prompt: str) -> str:
 def _generate_gemini(prompt: str) -> str:
     """Generate via Google Gemini."""
     import google.generativeai as genai
+
     genai.configure(api_key=settings.gemini_api_key)
     model_name = settings.llm_model.removeprefix("models/")
     model = genai.GenerativeModel(model_name)
@@ -484,23 +525,45 @@ async def fallback_node(state: BotState) -> dict:
                     if msg_dict.get("role") == "user":
                         last_inquiry = msg_dict.get("content", "Unknown")
                         break
-                        
+
+                client_name = ""
+                db = state.get("_db")
+                client_id_str = state.get("client_id")
+                if db and client_id_str:
+                    import uuid
+                    from sqlalchemy import select
+                    from models.models import Client
+                    try:
+                        result = await db.execute(select(Client).where(Client.id == uuid.UUID(client_id_str)))
+                        client_record = result.scalar_one_or_none()
+                        if client_record and client_record.name:
+                            client_name = client_record.name
+                    except Exception as db_e:
+                        logger.warning(f"[BOT] Failed to get client details for order alert: {db_e}")
+
+                name_str = f"Name: {client_name}\n" if client_name else ""
+
                 owner_msg = (
                     f"🚨 *NEW ORDER LEAD* 🚨\n"
+                    f"{name_str}"
                     f"Phone: {state.get('phone')}\n\n"
-                    f"📝 *Last inquiry:* \"{last_inquiry}\"\n\n"
+                    f'📝 *Last inquiry:* "{last_inquiry}"\n\n'
                     f"Client responded to the order prompt! Please contact them."
                 )
-                await adapter.send_message(phone=settings.owner_phone, message=owner_msg)
-                logger.info(f"[BOT] Alerted owner about new order lead from {state.get('phone')}.")
+                await adapter.send_message(
+                    phone=settings.owner_phone, message=owner_msg
+                )
+                logger.info(
+                    f"[BOT] Alerted owner about new order lead from {state.get('phone')} (Name: {client_name})."
+                )
         except Exception as e:
             logger.error(f"[BOT] Failed to alert owner about order lead: {e}")
-            
+
         return {
-            "response": "Great! Our team has been notified and will contact you shortly to confirm your order details. 📞", 
-            "confidence_score": 1.0, 
+            "response": "Great! Our team has been notified and will contact you shortly to confirm your order details. 📞",
+            "confidence_score": 1.0,
             "flagged": False,
-            "enquiry_intent": True
+            "enquiry_intent": True,
         }
 
     if reason == "no_context":
@@ -510,7 +573,8 @@ async def fallback_node(state: BotState) -> dict:
             f"You are a friendly WhatsApp customer service assistant for a solar energy company.\n"
             f"Answer the customer's question as helpfully as possible based on your general knowledge.\n"
             f"If you don't know the specific answer, invite them to contact us for details.\n"
-            f"Respond in {lang_label}. Be concise (2-4 sentences). Do NOT start with 'Great question!'.\n\n"
+            f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences.\n"
+            f"Respond in {lang_label}. Be concise. Do NOT start with 'Great question!'.\n\n"
             f"Customer question: {state.get('clean_message', '')}\n\n"
             f"Answer:"
         )
@@ -541,8 +605,9 @@ async def output_node(state: BotState) -> dict:
     adapter = _get_adapter()
     try:
         await adapter.send_message(phone=state["phone"], message=response)
-        
+
         from core.redis_client import add_conversation_history
+
         await add_conversation_history(state["phone"], state["raw_message"], response)
     except Exception as e:
         logger.error(f"[BOT] send_message failed: {e}")
@@ -550,6 +615,7 @@ async def output_node(state: BotState) -> dict:
     db = state.get("_db")
     if db:
         from models.models import Conversation
+
         conv = Conversation(
             client_id=uuid.UUID(state["client_id"]) if state.get("client_id") else None,
             direction="inbound",
@@ -569,9 +635,8 @@ async def output_node(state: BotState) -> dict:
         if state.get("client_id") and state.get("query_embedding"):
             try:
                 from services.memory_service import embed_and_save
-                asyncio.create_task(
-                    embed_and_save(conv.id, state["raw_message"], db)
-                )
+
+                asyncio.create_task(embed_and_save(conv.id, state["raw_message"], db))
             except Exception as e:
                 logger.warning(f"[BOT] embed_and_save task creation failed: {e}")
 
@@ -580,8 +645,10 @@ async def output_node(state: BotState) -> dict:
 
 # ─── Conditional edge helpers ─────────────────────────────────────────────────
 
+
 def should_fallback_after_rate(state: BotState) -> str:
     return "fallback" if state.get("done") else "order_intent"
+
 
 def should_fallback_after_order_intent(state: BotState) -> str:
     return "fallback" if state.get("done") else "detect_language"
@@ -604,6 +671,7 @@ def should_fallback_after_generate(state: BotState) -> str:
 
 
 # ─── Build graph ──────────────────────────────────────────────────────────────
+
 
 def build_rag_graph():
     g = StateGraph(BotState)
@@ -629,9 +697,11 @@ def build_rag_graph():
     g.add_conditional_edges("order_intent", should_fallback_after_order_intent)
     g.add_edge("detect_language", "injection_guard")
     g.add_conditional_edges("injection_guard", should_fallback_after_injection)
-    g.add_conditional_edges("embed", should_fallback_after_embed)  # embed → memory_retrieve
-    g.add_edge("memory_retrieve", "retrieve")                      # memory_retrieve → retrieve
-    g.add_edge("retrieve", "rerank")                               # retrieve → rerank → context_check
+    g.add_conditional_edges(
+        "embed", should_fallback_after_embed
+    )  # embed → memory_retrieve
+    g.add_edge("memory_retrieve", "retrieve")  # memory_retrieve → retrieve
+    g.add_edge("retrieve", "rerank")  # retrieve → rerank → context_check
     g.add_edge("rerank", "context_check")
     g.add_conditional_edges("context_check", should_fallback_after_context)
     g.add_conditional_edges("generate", should_fallback_after_generate)
@@ -648,12 +718,15 @@ _rag_graph = build_rag_graph()
 
 # ─── Messaging adapter helper ─────────────────────────────────────────────────
 
+
 def _get_adapter():
     from services.gupshup_adapter import get_messaging_adapter
+
     return get_messaging_adapter()
 
 
 # ─── Public entrypoint ────────────────────────────────────────────────────────
+
 
 async def run_bot(
     phone: str,
@@ -666,8 +739,9 @@ async def run_bot(
     Call this from the inbound webhook handler.
     """
     from core.redis_client import get_conversation_history
+
     history = await get_conversation_history(phone)
-    
+
     initial: BotState = {
         "client_id": client_id,
         "phone": phone,

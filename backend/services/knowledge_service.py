@@ -4,13 +4,14 @@ Knowledge Base ingestion service — Phase 3.1
 Pipeline:
   file bytes → extract text → chunk → embed (NIM or Gemini) → store (ChromaDB) → record (Postgres)
 """
+
 import asyncio
 import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Any
 
-import fitz                        # PyMuPDF
+import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 import io
@@ -31,11 +32,12 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".txt", ".md"}
 MAX_FILE_SIZE_BYTES = settings.max_upload_size_mb * 1024 * 1024
 
-CHUNK_SIZE = 512        # tokens (approx chars for splitter)
+CHUNK_SIZE = 512  # tokens (approx chars for splitter)
 CHUNK_OVERLAP = 50
 
 
 # ─── Text extraction ──────────────────────────────────────────────────────────
+
 
 def extract_text(file_bytes: bytes, filename: str) -> str:
     """Extract raw text from PDF, image, or plain text file.
@@ -55,7 +57,9 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 
         # Fallback: scanned / image-based PDF — render each page and OCR it
         if not text.strip():
-            logger.info(f"[KB] '{filename}' has no selectable text — attempting OCR on pages")
+            logger.info(
+                f"[KB] '{filename}' has no selectable text — attempting OCR on pages"
+            )
             ocr_parts = []
             with fitz.open(stream=file_bytes, filetype="pdf") as doc:
                 for page_num, page in enumerate(doc):
@@ -85,15 +89,15 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
             422,
             "No text could be extracted from the file. "
             "If this is a scanned PDF, ensure the scan quality is clear. "
-            "You can also try uploading it as individual page images (.jpg/.png)."
+            "You can also try uploading it as individual page images (.jpg/.png).",
         )
 
     logger.info(f"[KB] Extracted {len(text)} chars from {filename}")
     return text
 
 
-
 # ─── Semantic chunking ────────────────────────────────────────────────────────
+
 
 def chunk_text(text: str) -> list[str]:
     """Split text into ~512-char chunks with 50-char overlap."""
@@ -142,13 +146,13 @@ def get_chroma_collection() -> chromadb.Collection:
         logger.error(f"[KB] ChromaDB connection failed: {e}")
         raise HTTPException(
             503,
-            "Knowledge base service is temporarily unavailable. Please try again shortly."
+            "Knowledge base service is temporarily unavailable. Please try again shortly.",
         )
 
 
 def query_knowledge_base(
     query_embedding: list[float],
-    n_results: int = 5,
+    n_results: int = 15,
 ) -> dict:
     """
     Query ChromaDB for top-k chunks most similar to the query embedding.
@@ -181,6 +185,7 @@ def query_knowledge_base(
 
 # ─── Embeddings (dual-provider) ───────────────────────────────────────────────
 
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """
     Generate embeddings using the configured provider.
@@ -199,6 +204,7 @@ def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
     Uses the LLM API key — NIM keys are universal across all models.
     """
     import httpx, json
+
     url = f"{settings.nim_base_url}/embeddings"
     headers = {
         "Authorization": f"Bearer {settings.nim_embed_api_key or settings.nim_llm_api_key}",
@@ -208,7 +214,7 @@ def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
     embeddings = []
     batch_size = 50
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
+        batch = texts[i : i + batch_size]
         payload = {
             "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
             "input": batch,
@@ -219,7 +225,9 @@ def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
         with httpx.Client(timeout=30) as client:
             resp = client.post(url, headers=headers, json=payload)
             if not resp.is_success:
-                logger.error(f"[KB][NIM] Embed error {resp.status_code}: {resp.text[:200]}")
+                logger.error(
+                    f"[KB][NIM] Embed error {resp.status_code}: {resp.text[:200]}"
+                )
                 resp.raise_for_status()
             data = resp.json()
         embeddings.extend([item["embedding"] for item in data["data"]])
@@ -230,22 +238,26 @@ def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
 def _embed_texts_gemini(texts: list[str]) -> list[list[float]]:
     """Embed via Google Gemini embedding-001."""
     import google.generativeai as genai
+
     genai.configure(api_key=settings.gemini_api_key)
     embeddings = []
     batch_size = 100
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
+        batch = texts[i : i + batch_size]
         result = genai.embed_content(
             model=settings.embedding_model,
             content=batch,
             task_type="retrieval_document",
         )
         embeddings.extend(result["embedding"])
-    logger.info(f"[KB][Gemini] Generated {len(embeddings)} embeddings via {settings.embedding_model}")
+    logger.info(
+        f"[KB][Gemini] Generated {len(embeddings)} embeddings via {settings.embedding_model}"
+    )
     return embeddings
 
 
 # ─── Core ingestion ───────────────────────────────────────────────────────────
+
 
 async def ingest_document(
     db: AsyncSession,
@@ -270,8 +282,11 @@ async def ingest_document(
     # Validate / default offers dates
     if category == "offers":
         from datetime import date
+
         if not valid_from:
-            valid_from = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            valid_from = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
         if not valid_until:
             today = date.today()
             valid_until = datetime(today.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
@@ -343,8 +358,12 @@ async def ingest_document(
         "filename": kb_record.filename,
         "category": kb_record.category,
         "chunks_indexed": len(chunks),
-        "valid_from": kb_record.valid_from.isoformat() if kb_record.valid_from else None,
-        "valid_until": kb_record.valid_until.isoformat() if kb_record.valid_until else None,
+        "valid_from": kb_record.valid_from.isoformat()
+        if kb_record.valid_from
+        else None,
+        "valid_until": kb_record.valid_until.isoformat()
+        if kb_record.valid_until
+        else None,
         "is_active": kb_record.is_active,
         "created_at": kb_record.created_at.isoformat(),
         "status": "indexed",
@@ -352,6 +371,7 @@ async def ingest_document(
 
 
 # ─── List documents ───────────────────────────────────────────────────────────
+
 
 async def list_documents(
     db: AsyncSession,
@@ -363,14 +383,20 @@ async def list_documents(
     if category:
         q = q.where(KnowledgeBase.category == category)
 
-    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
+    total = (
+        await db.execute(select(func.count()).select_from(q.subquery()))
+    ).scalar_one()
     rows = (
-        await db.execute(
-            q.order_by(KnowledgeBase.created_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+        (
+            await db.execute(
+                q.order_by(KnowledgeBase.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     return {
         "documents": [_kb_dict(r) for r in rows],
@@ -382,6 +408,7 @@ async def list_documents(
 
 
 # ─── Delete document ──────────────────────────────────────────────────────────
+
 
 async def delete_document(
     db: AsyncSession,
@@ -406,9 +433,7 @@ async def delete_document(
 
     # Mark inactive in Postgres
     await db.execute(
-        update(KnowledgeBase)
-        .where(KnowledgeBase.id == doc_id)
-        .values(is_active=False)
+        update(KnowledgeBase).where(KnowledgeBase.id == doc_id).values(is_active=False)
     )
     await db.commit()
 
@@ -416,6 +441,7 @@ async def delete_document(
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
+
 
 def _kb_dict(r: KnowledgeBase) -> dict:
     return {

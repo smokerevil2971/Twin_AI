@@ -27,17 +27,7 @@ router = APIRouter(prefix="/broadcasts", tags=["Broadcasts"])
 
 # ─── Request schemas ──────────────────────────────────────────────────────────
 
-class CreateBroadcastRequest(BaseModel):
-    name: str
-    message_template: str
-    channel: str = "whatsapp"
-    language: str = "en"
-    scheduled_at: Optional[datetime] = None
-    target_client_ids: Optional[list[uuid.UUID]] = None
-    # ─── Media fields (optional) ──────────────────────────────────────────────
-    media_url: Optional[str] = None          # publicly accessible URL (image or PDF)
-    media_type: Optional[str] = None         # 'image' | 'document'
-    media_filename: Optional[str] = None     # friendly filename shown on document
+from models.schemas import CreateBroadcastRequest
 
 
 # ─── POST /broadcasts ─────────────────────────────────────────────────────────
