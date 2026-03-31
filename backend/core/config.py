@@ -51,8 +51,6 @@ class Settings(BaseSettings):
     multimodal_model: str = "microsoft/phi-4-multimodal-instruct"
     rerank_model: str = "nvidia/rerank-qa-mistral-4b"
 
-    # OpenAI (legacy / optional)
-    openai_api_key: str = ""
 
     # Gupshup
     gupshup_mode: str = "mock"  # "mock" | "real"
@@ -80,13 +78,6 @@ class Settings(BaseSettings):
     broadcast_cooldown_enabled: bool = True
     flagged_digest_hours: int = 2
 
-    # SendGrid
-    sendgrid_api_key: str = ""
-    alert_email_from: str = ""
-    owner_alert_email: str = ""
-
-    # Sentry
-    sentry_dsn: str = ""
 
     # CORS
     allowed_origins: str = "http://localhost:3000,http://localhost:5173"
@@ -106,9 +97,6 @@ class Settings(BaseSettings):
     def is_nim(self) -> bool:
         return self.llm_provider.lower() == "nim"
 
-    @property
-    def is_gemini(self) -> bool:
-        return self.llm_provider.lower() == "gemini"
 
     class Config:
         env_file = ".env"

@@ -14,7 +14,6 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request, Response
 from sqlalchemy import select, update, func
@@ -23,15 +22,12 @@ from core.database import get_db, get_db_context, AsyncSessionLocal
 from core.config import settings
 from models.models import BroadcastRecipient, Broadcast, Client
 from services.client_service import import_clients, parse_upload_file, detect_column_mapping
-from services.gupshup_adapter import get_gupshup_adapter
 from services.rag_bot import run_bot
-from services.broadcast_service import create_broadcast
 from services.gupshup_adapter import get_messaging_adapter
 from services.media_processor import process_media, UNSUPPORTED_MSG, RATE_LIMITED_MSG
 from services import command_service
 from tasks.broadcast_tasks import send_broadcast
 import httpx
-from services import knowledge_service
 from core.redis_client import (
     get_onboard_state, set_onboard_state, clear_onboard_state,
     ONBOARD_AWAITING_CONSENT, ONBOARD_AWAITING_LANGUAGE,
@@ -93,7 +89,7 @@ async def gupshup_delivery_webhook(
     signature = request.headers.get("X-Gupshup-Signature", "")
 
     # ── 2. Verify HMAC signature ──────────────────────────────────────────────
-    adapter = get_gupshup_adapter()
+    adapter = get_messaging_adapter()
     is_valid = await adapter.verify_webhook_signature(raw_body, signature)
     if not is_valid:
         logger.warning("Gupshup webhook: invalid HMAC signature — rejected")
@@ -213,7 +209,7 @@ async def whatsapp_inbound_webhook(
             raw_body = await request.body()
             signature = request.headers.get("X-Gupshup-Signature", "")
             if signature:
-                adapter = get_gupshup_adapter()
+                adapter = get_messaging_adapter()
                 is_valid = await adapter.verify_webhook_signature(raw_body, signature)
                 if not is_valid:
                     logger.warning("[WA WEBHOOK] Invalid HMAC — rejected")
@@ -261,7 +257,6 @@ async def whatsapp_inbound_webhook(
         logger.info(f"[WA WEBHOOK] Owner testing RAG bot: {message_text[:60]}")
 
 
-    # ── Regular client — Onboarding + RAG bot ────────────────────────────
     # ── Regular client — Onboarding + RAG bot ────────────────────────────
     # If media attached, convert to text first
     sent_typing_indicator = False
@@ -440,7 +435,7 @@ async def whatsapp_inbound_webhook(
         if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
             from core.redis_client import get_redis
             r = get_redis()
-            dynamic_url = await r.get("twin_ai_solar_catalogue_url")
+            dynamic_url = await r.get("devraj_catalogue_url")
             
             final_url = dynamic_url or settings.catalogue_url
             

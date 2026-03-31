@@ -6,7 +6,6 @@ Both send_message() and send_media_message() are supported.
 """
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
 import uuid
 from typing import Optional
 
