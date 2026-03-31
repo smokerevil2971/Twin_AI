@@ -12,7 +12,6 @@ _redis: Redis | None = None
 # Onboarding states stored as onboard:{phone}
 ONBOARD_AWAITING_CONSENT  = "awaiting_consent"
 ONBOARD_AWAITING_LANGUAGE = "awaiting_language"
-ONBOARD_TTL = 86_400  # 24 hours — expire if client never responds
 
 
 def get_redis() -> Redis:
@@ -48,7 +47,7 @@ async def get_onboard_state(phone: str) -> str | None:
 async def set_onboard_state(phone: str, state: str) -> None:
     """Set onboarding state for phone with 24-hour TTL."""
     try:
-        await get_redis().set(f"onboard:{phone}", state, ex=ONBOARD_TTL)
+        await get_redis().set(f"onboard:{phone}", state, ex=settings.onboard_state_ttl_seconds)
     except Exception:
         pass
 async def get_conversation_history(phone: str) -> list[dict]:
@@ -73,11 +72,12 @@ async def add_conversation_history(phone: str, user_msg: str, bot_msg: str) -> N
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": bot_msg})
         
-        # Keep only the last 6 messages (3 turns = 3 user + 3 bot)
-        if len(history) > 6:
-            history = history[-6:]
+        # Keep only the last N messages (max_turns * 2: user + bot per turn)
+        max_messages = settings.chat_history_max_turns * 2
+        if len(history) > max_messages:
+            history = history[-max_messages:]
             
-        await r.set(key, json.dumps(history), ex=3600)  # 1 hour TTL
+        await r.set(key, json.dumps(history), ex=settings.chat_history_ttl_seconds)  # TTL from config
     except Exception:
         pass
 

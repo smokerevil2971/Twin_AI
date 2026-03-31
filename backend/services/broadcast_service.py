@@ -66,8 +66,8 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
         resp = await nim_client.chat.completions.create(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=256,
-            temperature=0.8,
+            max_tokens=settings.personalise_max_tokens,
+            temperature=settings.personalise_temperature,
         )
         text = (resp.choices[0].message.content or "").strip()
         if text:

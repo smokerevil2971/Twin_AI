@@ -314,7 +314,7 @@ async def whatsapp_inbound_webhook(
             await adapter.send_message(
                 phone=sender_phone,
                 message=(
-                    "👋 *Welcome to Twin AI Solar!*\n\n"
+                    f"👋 *Welcome to {settings.business_name}!*\n\n"
                     "I'm your AI assistant. I can help you with:\n"
                     "• Product prices & availability 🏠\n"
                     "• Ongoing offers & discounts 🎁\n"
@@ -325,7 +325,7 @@ async def whatsapp_inbound_webhook(
                     "📢 Would you like to receive product updates & offers from us?\n\n"
                     "Reply *YES* to subscribe 🔔\n"
                     "Reply *NO* to skip (you can still chat with me anytime)\n\n"
-                    "_For direct help: +91-9075805070_"
+                    f"_For direct help: {settings.support_phone}_"
                 ),
             )
             await set_onboard_state(sender_phone, ONBOARD_AWAITING_CONSENT)
@@ -435,7 +435,7 @@ async def whatsapp_inbound_webhook(
         if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
             from core.redis_client import get_redis
             r = get_redis()
-            dynamic_url = await r.get("devraj_catalogue_url")
+            dynamic_url = await r.get(settings.catalogue_redis_key)
             
             final_url = dynamic_url or settings.catalogue_url
             
@@ -444,7 +444,7 @@ async def whatsapp_inbound_webhook(
                     phone=sender_phone,
                     media_url=final_url,
                     media_type="document",
-                    filename="Twin_AI_Solar_Product_Catalogue.pdf",
+                    filename=settings.catalogue_filename,
                     caption="Here is our latest product catalogue and price list! 📄",
                 )
             else:

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from core.database import get_db
 from core.security import get_current_user
 from core.responses import success_response, error_response
+from core.config import settings
 from models.models import BroadcastRecipient, Broadcast
 from services import broadcast_service
 from tasks.broadcast_tasks import send_broadcast
@@ -76,7 +77,7 @@ async def create_broadcast(
             sched = sched.replace(tzinfo=timezone.utc)
 
         now = datetime.now(timezone.utc)
-        min_lead_seconds = 5 * 60  # 5-minute minimum lead time
+        min_lead_seconds = settings.broadcast_min_lead_time_minutes * 60
 
         if sched <= now:
             raise HTTPException(
@@ -92,7 +93,7 @@ async def create_broadcast(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "scheduled_at must be at least 5 minutes in the future "
+                    f"scheduled_at must be at least {settings.broadcast_min_lead_time_minutes} minutes in the future "
                     "to allow time for review before sending."
                 ),
             )

@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 import uuid
 from typing import Optional
 
+from core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +77,7 @@ class RealGupshupAdapter(GupshupAdapter):
         self.app_name = app_name
         self.sender = sender
         self.webhook_secret = webhook_secret
-        self.client = httpx.AsyncClient(base_url="https://api.gupshup.io", timeout=10.0)
+        self.client = httpx.AsyncClient(base_url="https://api.gupshup.io", timeout=settings.http_timeout_seconds)
 
     async def send_message(self, phone: str, message: str) -> dict:
         import httpx

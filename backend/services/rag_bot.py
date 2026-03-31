@@ -27,8 +27,6 @@ from services.gupshup_adapter import get_messaging_adapter
 
 logger = logging.getLogger(__name__)
 
-# ─── Rate limit constant ──────────────────────────────────────────────────────
-MAX_MSGS_PER_HOUR = 20
 
 # ─── Injection guard blocklist ────────────────────────────────────────────────
 # TC-023 fix: Removed broad single-word blocks ("code", "hack", "program") that
@@ -145,7 +143,7 @@ def sanitise_node(state: BotState) -> dict:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"[^\w\s,.?!।\-'\"@\u0900-\u097F]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    text = text[:1000]
+    text = text[:settings.bot_message_max_length]
     logger.info(f"[BOT] sanitised message: {text[:80]}")
     return {"clean_message": text, "language": "en"}
 
@@ -162,7 +160,7 @@ async def rate_limit_node(state: BotState) -> dict:
     try:
         count = await increment_rate(key, window_seconds=3600)
         logger.info(f"[BOT] rate check → {key} = {count}")
-        if count > MAX_MSGS_PER_HOUR:
+        if count > settings.bot_rate_limit_per_hour:
             return {"done": True, "fallback_reason": "rate_limit"}
     except Exception as e:
         logger.warning(
@@ -245,7 +243,7 @@ async def memory_retrieve_node(state: BotState) -> dict:
         client_id=client_id,
         query_embedding=embedding,
         db=db,
-        top_k=3,
+        top_k=settings.memory_top_k,
     )
     return {"long_term_memory": memories}
 
@@ -261,13 +259,13 @@ def _embed_nim(text: str) -> list:
         "Accept": "application/json",
     }
     payload = {
-        "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
+        "model": settings.embedding_model,
         "input": [text],
         "input_type": "query",
         "encoding_format": "float",
         "truncate": "END",
     }
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=settings.embed_timeout_seconds) as client:
         resp = client.post(url, headers=headers, json=payload)
         if not resp.is_success:
             raise ValueError(f"NIM embed {resp.status_code}: {resp.text[:200]}")
@@ -294,7 +292,7 @@ def retrieve_node(state: BotState) -> dict:
         return {"retrieved_chunks": [], "retrieved_distances": []}
     results = query_knowledge_base(
         query_embedding=state["query_embedding"],
-        n_results=15,
+        n_results=settings.rag_top_k_results,
     )
     return {
         "retrieved_chunks": results["documents"],
@@ -326,7 +324,7 @@ async def rerank_node(state: BotState) -> dict:
             "query": {"text": query},
             "passages": [{"text": chunk} for chunk in chunks],
         }
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=settings.rerank_timeout_seconds) as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -376,7 +374,7 @@ def context_check_node(state: BotState) -> dict:
 
     dists = state.get("retrieved_distances", [])
     chunks = state.get("retrieved_chunks", [])
-    if not chunks or not dists or min(dists) > 1.2:
+    if not chunks or not dists or min(dists) > settings.rag_distance_threshold:
         logger.info(f"[BOT] context check → no useful context (dists={dists[:3]})")
         return {"done": True, "fallback_reason": "no_context"}
     return {}
@@ -468,8 +466,8 @@ def _generate_nim(prompt: str) -> str:
     resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=512,
-        temperature=0.7,
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature,
     )
     return resp.choices[0].message.content.strip()
 
@@ -496,7 +494,7 @@ def confidence_check_node(state: BotState) -> dict:
         confidence = 0.0
     else:
         confidence = round(max(0.0, 1.0 - (min(dists) / 2.0)), 4)
-    flagged = confidence < 0.75
+    flagged = confidence < settings.rag_confidence_threshold
     logger.info(f"[BOT] confidence={confidence}, flagged={flagged}")
     return {"confidence_score": confidence, "flagged": flagged}
 

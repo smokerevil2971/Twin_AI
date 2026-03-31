@@ -39,7 +39,7 @@ async def download_media(url: str, account_sid: str = "", auth_token: str = "") 
     Auth is now only added when the provider is Twilio and credentials are set.
     """
     auth = (account_sid, auth_token) if (account_sid and auth_token) else None
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=settings.media_download_timeout_seconds, follow_redirects=True) as client:
         resp = await client.get(url, auth=auth)
         resp.raise_for_status()
         return resp.content
@@ -131,7 +131,7 @@ def _vision_nim(prompt: str, b64: str, mime_type: str) -> str:
                 },
             ],
         }],
-        max_tokens=256,
+        max_tokens=settings.vision_max_tokens,
         temperature=0.1,
     )
     return resp.choices[0].message.content or ""
@@ -164,8 +164,8 @@ async def _process_pdf(media_url: str) -> str:
         if not full_text:
             return "[Client sent a PDF but it contained no readable text (may be a scanned image)]"
 
-        trimmed = full_text[:3000]
-        if len(full_text) > 3000:
+        trimmed = full_text[:settings.media_pdf_max_chars]
+        if len(full_text) > settings.media_pdf_max_chars:
             trimmed += "\n[... document truncated ...]"
 
         logger.info(f"[MEDIA] PDF extracted {len(full_text)} chars")
@@ -239,7 +239,7 @@ def _audio_nim(b64: str, mime_type: str) -> str:
                 },
             ],
         }],
-        max_tokens=512,
+        max_tokens=settings.audio_max_tokens,
         temperature=0.0,
     )
     return resp.choices[0].message.content or ""

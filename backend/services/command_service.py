@@ -202,7 +202,7 @@ async def dispatch_owner_command(
         new_url = cat_match.group(1).strip()
         from core.redis_client import get_redis
         r = get_redis()
-        await r.set("devraj_catalogue_url", new_url)
+        await r.set(settings.catalogue_redis_key, new_url)
         await adapter.send_message(
             phone=sender_phone,
             message=f"✅ Catalogue URL updated successfully to:\n{new_url}",
@@ -277,12 +277,12 @@ async def dispatch_owner_command(
         public_media_url = media_url
         try:
             import os as _os, uuid as _uuid
-            uploads_dir = "/tmp/twinai_media"
+            uploads_dir = settings.media_cache_dir
             _os.makedirs(uploads_dir, exist_ok=True)
             file_name = f"{_uuid.uuid4().hex}{file_ext}"
             save_path = f"{uploads_dir}/{file_name}"
 
-            async with httpx.AsyncClient(timeout=15.0) as hclient:
+            async with httpx.AsyncClient(timeout=settings.rerank_timeout_seconds) as hclient:
                 dl = await hclient.get(
                     media_url,
                     auth=(settings.twilio_account_sid, settings.twilio_auth_token),
@@ -435,7 +435,7 @@ async def dispatch_owner_command(
     if media_url and media_type and media_type.lower() in _CLIENT_SHEET_TYPES:
         logger.info(f"[CMD] Client spreadsheet received ({media_type})")
         try:
-            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
+            async with httpx.AsyncClient(timeout=settings.file_download_timeout_seconds, follow_redirects=True) as hclient:
                 if settings.messaging_provider == "twilio" and settings.twilio_account_sid:
                     resp = await hclient.get(
                         media_url,
@@ -486,7 +486,7 @@ async def dispatch_owner_command(
     if media_url and media_type and media_type.lower() in _INGESTABLE_TYPES:
         logger.info(f"[CMD] Document received: {media_type} — ingesting into KB")
         try:
-            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as hclient:
+            async with httpx.AsyncClient(timeout=settings.file_download_timeout_seconds, follow_redirects=True) as hclient:
                 if settings.messaging_provider == "twilio" and settings.twilio_account_sid:
                     resp = await hclient.get(
                         media_url,

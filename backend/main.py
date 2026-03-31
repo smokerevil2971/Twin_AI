@@ -88,7 +88,7 @@ app.include_router(knowledge_router)
 # ─── Static Media Files (/media/filename) ─────────────────────────────────────
 # Images downloaded from Twilio (with auth) are cached here and served publicly
 # so they can be used as MediaUrl in outbound WhatsApp messages via ngrok.
-UPLOADS_DIR = "/tmp/twinai_media"
+UPLOADS_DIR = settings.media_cache_dir
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=UPLOADS_DIR), name="media")
 

@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".txt", ".md"}
 MAX_FILE_SIZE_BYTES = settings.max_upload_size_mb * 1024 * 1024
 
-CHUNK_SIZE = 512  # tokens (approx chars for splitter)
-CHUNK_OVERLAP = 50
 
 
 # ─── Text extraction ──────────────────────────────────────────────────────────
@@ -100,10 +98,10 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 
 
 def chunk_text(text: str) -> list[str]:
-    """Split text into ~512-char chunks with 50-char overlap."""
+    """Split text into chunks — size and overlap configurable via KB_CHUNK_SIZE/KB_CHUNK_OVERLAP."""
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
+        chunk_size=settings.kb_chunk_size,
+        chunk_overlap=settings.kb_chunk_overlap,
         separators=["\n\n", "\n", " ", ""],
     )
     chunks = splitter.split_text(text)

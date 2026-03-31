@@ -11,6 +11,7 @@ import hashlib
 import httpx
 
 from services.gupshup_adapter import GupshupAdapter
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class TwilioAdapter(GupshupAdapter):
                     "Body": message,
                 },
                 auth=(self.account_sid, self.auth_token),
-                timeout=10.0,
+                timeout=settings.http_timeout_seconds,
             )
         if response.status_code not in (200, 201):
             logger.error(
@@ -97,7 +98,7 @@ class TwilioAdapter(GupshupAdapter):
                 self.base_url,
                 data=post_data,
                 auth=(self.account_sid, self.auth_token),
-                timeout=10.0,
+                timeout=settings.http_timeout_seconds,
             )
         if response.status_code not in (200, 201):
             logger.error(

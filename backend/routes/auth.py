@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from core.database import get_db
 from core.security import verify_password, create_access_token, hash_password, get_current_user
 from core.responses import success_response
+from core.config import settings
 from models.models import Owner
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -145,8 +146,8 @@ async def change_password(
     owner = await _get_owner(db)
     if not verify_password(body.current_password, owner.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if len(body.new_password) < settings.min_password_length:
+        raise HTTPException(status_code=400, detail=f"New password must be at least {settings.min_password_length} characters")
     owner.password_hash = hash_password(body.new_password)
     await db.commit()
     return success_response({"message": "Password updated successfully"})
