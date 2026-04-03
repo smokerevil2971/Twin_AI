@@ -35,6 +35,27 @@ class GupshupAdapter(ABC):
         ...
 
     @abstractmethod
+    async def send_interactive_message(
+        self,
+        phone: str,
+        body: str,
+        buttons: list[dict],
+        use_list: bool = False,
+        list_items: list[dict] | None = None,
+    ) -> dict:
+        """
+        Send a WhatsApp interactive message.
+
+        For quick-reply (use_list=False):
+          buttons = [{"id": "products", "title": "🛍️ Products"}, ...]
+
+        For list-picker (use_list=True):
+          list_items = [{"id": "row_xyz", "title": "Solar Panel", "description": "₹8,500"}, ...]
+          buttons[0]["title"] is used as the list header/section title.
+        """
+        ...
+
+    @abstractmethod
     async def verify_webhook_signature(self, payload: bytes, signature: str) -> bool:
         ...
 
@@ -62,6 +83,21 @@ class MockGupshupAdapter(GupshupAdapter):
             f"type={media_type} url={media_url[:60]} | msg_id={mock_id}"
         )
         return {"status": "submitted", "messageId": mock_id, "phone": phone}
+
+    async def send_interactive_message(
+        self,
+        phone: str,
+        body: str,
+        buttons: list[dict],
+        use_list: bool = False,
+        list_items: list[dict] | None = None,
+    ) -> dict:
+        """Mock: log the call and fall back to sending body as plain text."""
+        items = list_items or buttons
+        labels = ", ".join(i.get("title", "") for i in items[:5])
+        logger.info(f"[MOCK GUPSHUP] send_interactive_message → {phone} | items: {labels}")
+        # Fall back to plain text so messages aren't dropped in mock mode
+        return await self.send_message(phone=phone, message=f"{body}\n\n{labels}")
 
     async def verify_webhook_signature(self, payload: bytes, signature: str) -> bool:
         logger.info("[MOCK GUPSHUP] verify_webhook_signature → always True in mock mode")

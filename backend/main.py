@@ -16,6 +16,7 @@ from routes.clients import router as clients_router
 from routes.broadcasts import router as broadcasts_router
 from routes.webhooks import router as webhooks_router
 from routes.knowledge_base import router as knowledge_router
+from routes.products import router as products_router
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Twin AI — Two-Bot System",
+    title="Devraj Traders — System",
     version="2.0.0",
     docs_url="/docs" if settings.app_env == "development" else None,
     redoc_url=None,
@@ -84,6 +85,7 @@ app.include_router(clients_router)
 app.include_router(broadcasts_router)
 app.include_router(webhooks_router)
 app.include_router(knowledge_router)
+app.include_router(products_router)
 
 # ─── Static Media Files (/media/filename) ─────────────────────────────────────
 # Images downloaded from Twilio (with auth) are cached here and served publicly

@@ -53,8 +53,8 @@ class Settings(BaseSettings):
 
     # ── Business / Brand Identity ────────────────────────────────────────────────
     # Used in welcome messages and filenames sent to customers
-    business_name: str = "Twin AI Solar"
-    catalogue_filename: str = "Twin_AI_Solar_Product_Catalogue.pdf"
+    business_name: str = "Devraj Traders"
+    catalogue_filename: str = "Devraj_Traders_Product_Catalogue.pdf"
     timezone: str = "Asia/Kolkata"
 
     # ── Messaging Providers ──────────────────────────────────────────────────────
@@ -158,6 +158,10 @@ class Settings(BaseSettings):
     chat_history_max_turns: int = 3
     # How long the onboarding state machine waits for a reply before expiring
     onboard_state_ttl_seconds: int = 86400
+    # How long the interactive menu state is kept per user in Redis
+    menu_state_ttl_seconds: int = 1800   # 30 minutes
+    # Max items shown per sub-menu page (WhatsApp list-picker hard limit = 10)
+    menu_page_size: int = 10
 
     # ── Infrastructure ────────────────────────────────────────────────────────────
     # Temp directory for downloaded media files before processing

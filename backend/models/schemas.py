@@ -55,3 +55,33 @@ class CreateBroadcastRequest(BaseModel):
     media_url: Optional[str] = None          # publicly accessible URL (image or PDF)
     media_type: Optional[str] = None         # 'image' | 'document'
     media_filename: Optional[str] = None     # friendly filename shown on document
+
+# ─── Products ────────────────────────────────────────────────────────────────
+
+class ProductCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    price: Optional[float] = None
+    is_active: bool = True
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    is_active: Optional[bool] = None
+
+# ─── Offers ──────────────────────────────────────────────────────────────────
+
+class OfferCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: bool = True
+
+class OfferUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: Optional[bool] = None

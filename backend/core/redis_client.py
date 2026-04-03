@@ -13,6 +13,11 @@ _redis: Redis | None = None
 ONBOARD_AWAITING_CONSENT  = "awaiting_consent"
 ONBOARD_AWAITING_LANGUAGE = "awaiting_language"
 
+# ── Menu states stored as menu:{phone} ────────────────────────────────────────
+MENU_STATE_MAIN     = "menu_main"       # client is at the main menu
+MENU_STATE_PRODUCTS = "menu_products"   # client is in the products sub-menu
+MENU_STATE_OFFERS   = "menu_offers"     # client is in the offers sub-menu
+
 
 def get_redis() -> Redis:
     global _redis
@@ -87,3 +92,83 @@ async def clear_onboard_state(phone: str) -> None:
         await get_redis().delete(f"onboard:{phone}")
     except Exception:
         pass
+
+
+# ─── Menu state helpers ───────────────────────────────────────────────────────
+
+async def get_menu_state(phone: str) -> str | None:
+    """Return current menu state for phone, or None if no active menu."""
+    try:
+        return await get_redis().get(f"menu:{phone}")
+    except Exception:
+        return None
+
+
+async def set_menu_state(phone: str, state: str) -> None:
+    """Set menu state with TTL from config."""
+    try:
+        from core.config import settings
+        await get_redis().set(f"menu:{phone}", state, ex=settings.menu_state_ttl_seconds)
+    except Exception:
+        pass
+
+
+async def clear_menu_state(phone: str) -> None:
+    """Clear both menu state and page mapping for this phone."""
+    try:
+        r = get_redis()
+        await r.delete(f"menu:{phone}")
+        await r.delete(f"menu_page:{phone}")
+    except Exception:
+        pass
+
+
+async def get_menu_page(phone: str) -> dict:
+    """
+    Return the button-ID → DB-item-ID mapping for the current menu page.
+    Format: {"row_<uuid>": "<product_or_offer_uuid>", ...}
+    """
+    try:
+        raw = await get_redis().get(f"menu_page:{phone}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return {}
+
+
+async def set_menu_page(phone: str, mapping: dict) -> None:
+    """Store current page's button→item mapping with same TTL as menu state."""
+    try:
+        from core.config import settings
+        await get_redis().set(
+            f"menu_page:{phone}",
+            json.dumps(mapping),
+            ex=settings.menu_state_ttl_seconds,
+        )
+    except Exception:
+        pass
+
+
+# ─── Twilio ContentSid cache ──────────────────────────────────────────────────
+
+async def get_cached_content_sid(cache_key: str) -> str | None:
+    """
+    Retrieve a cached Twilio ContentSid.
+    Keys used:
+      'twilio:main_menu_sid'    — quick-reply main menu
+      'twilio:dynamic_list_sid' — list-picker for products/offers
+    """
+    try:
+        return await get_redis().get(cache_key)
+    except Exception:
+        return None
+
+
+async def cache_content_sid(cache_key: str, sid: str) -> None:
+    """Cache a Twilio ContentSid permanently (no expiry — it never changes)."""
+    try:
+        await get_redis().set(cache_key, sid)
+    except Exception:
+        pass
+

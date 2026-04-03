@@ -32,6 +32,7 @@ from core.redis_client import (
     get_onboard_state, set_onboard_state, clear_onboard_state,
     ONBOARD_AWAITING_CONSENT, ONBOARD_AWAITING_LANGUAGE,
 )
+from services import menu_service
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ async def gupshup_delivery_webhook(
 
     Gupshup payload format:
     {
-      "app": "TwinAI",
+      "app": "Devraj Traders",
       "timestamp": 1234567890,
       "version": 2,
       "type": "message-event",
@@ -177,6 +178,31 @@ async def gupshup_delivery_webhook(
     return Response(status_code=200, content="ok")
 
 
+# ─── GET /webhooks/whatsapp ─────────────────────────────────────────────────
+
+@router.get("/whatsapp")
+async def whatsapp_webhook_verification(
+    request: Request,
+):
+    """
+    Meta (WhatsApp Business API) webhook verification endpoint.
+    Retrieves the challenge parameter and responds to verify the URL.
+    """
+    hub_mode = request.query_params.get("hub.mode")
+    hub_challenge = request.query_params.get("hub.challenge")
+    hub_verify_token = request.query_params.get("hub.verify_token")
+
+    # In a real app, match this against a setting like settings.meta_verify_token
+    # For now, we will simply accept whatever the user types in the portal
+    # as long as they provide *something*, or we can hardcode "twinai123"
+    VERIFY_TOKEN = "twinai123" 
+
+    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+        return Response(content=hub_challenge, media_type="text/plain")
+    
+    return Response(status_code=403, content="Verification failed")
+
+
 # ─── POST /webhooks/whatsapp ─────────────────────────────────────────────────
 
 @router.post("/whatsapp", status_code=200)
@@ -199,6 +225,9 @@ async def whatsapp_inbound_webhook(
             form = await request.form()
             sender_phone = str(form.get("From", "")).replace("whatsapp:", "")
             message_text = str(form.get("Body", "")).strip()
+            # Interactive message fields
+            button_payload = str(form.get("ButtonPayload", "")).strip().lower()
+            list_id        = str(form.get("ListId", "")).strip()
             # Media attachments (images, PDFs, voice notes)
             num_media = int(form.get("NumMedia", 0))
             media_url = str(form.get("MediaUrl0", "")).strip() if num_media > 0 else ""
@@ -231,6 +260,8 @@ async def whatsapp_inbound_webhook(
             )
             inner = payload.get("payload", {})
             message_text = str(inner.get("text") or inner.get("message") or "")
+            button_payload = ""
+            list_id = ""
     except Exception as exc:
         logger.warning(f"[WA WEBHOOK] Failed to parse body: {exc}")
         return Response(status_code=200, content="ok")
@@ -242,19 +273,32 @@ async def whatsapp_inbound_webhook(
     logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]} media={bool(media_url)}")
 
     # ── Owner command routing ─────────────────────────────────────────────
-    if settings.owner_phone and sender_phone == settings.owner_phone:
+    # Normalize phone numbers for comparison (strip '+' and spaces)
+    owner_raw = str(settings.owner_phone).replace("+", "").replace(" ", "").strip()
+    sender_raw = sender_phone.replace("+", "").replace(" ", "").strip()
+    
+    if owner_raw and sender_raw == owner_raw:
         base_url = str(request.base_url)
-        cmd_response = await command_service.dispatch_owner_command(
-            msg=message_text.strip(),
-            sender_phone=sender_phone,
-            media_url=media_url,
-            media_type=media_type,
-            base_url=base_url,
-        )
-        if cmd_response is not None:
-            return cmd_response
-        # None return means owner is testing the RAG bot — fall through below
-        logger.info(f"[WA WEBHOOK] Owner testing RAG bot: {message_text[:60]}")
+        try:
+            cmd_response = await command_service.dispatch_owner_command(
+                msg=message_text.strip(),
+                sender_phone=sender_phone,
+                media_url=media_url,
+                media_type=media_type,
+                base_url=base_url,
+            )
+            if cmd_response is not None:
+                return cmd_response
+            # None return means owner is testing the RAG bot — fall through below
+            logger.info(f"[WA WEBHOOK] Owner testing RAG bot: {message_text[:60]}")
+        except Exception as exc:
+            logger.error(f"[WA WEBHOOK] dispatch_owner_command CRASHED: {exc}", exc_info=True)
+            try:
+                adapter = get_messaging_adapter()
+                await adapter.send_message(phone=sender_phone, message=f"❌ System Error in Owner Command: {str(exc)}")
+            except Exception:
+                pass
+            return Response(status_code=500, content="owner_command_error")
 
 
     # ── Regular client — Onboarding + RAG bot ────────────────────────────
@@ -364,6 +408,8 @@ async def whatsapp_inbound_webhook(
                         "_To subscribe later, just say *START*._"
                     ),
                 )
+                # Show main menu even for opted-out users (they can still browse)
+                await menu_service.send_main_menu(adapter, sender_phone)
             else:
                 # Unrecognised reply — nudge them
                 await adapter.send_message(
@@ -386,6 +432,8 @@ async def whatsapp_inbound_webhook(
                         "अब आप मुझसे हमारे किसी भी उत्पाद के बारे में पूछ सकते हैं! 😊"
                     ),
                 )
+                # Show main menu so client can start browsing
+                await menu_service.send_main_menu(adapter, sender_phone)
             elif reply in ("EN", "ENGLISH", "ENG"):
                 client.language = "en"
                 await db.commit()
@@ -398,6 +446,8 @@ async def whatsapp_inbound_webhook(
                         "Feel free to ask me anything about our products! 😊"
                     ),
                 )
+                # Show main menu so client can start browsing
+                await menu_service.send_main_menu(adapter, sender_phone)
             else:
                 await adapter.send_message(
                     phone=sender_phone,
@@ -432,7 +482,7 @@ async def whatsapp_inbound_webhook(
             return Response(status_code=200, content="ok")
 
         # ── 3.3 Catalogue (Priority 3) ─────────────────────
-        if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE"):
+        if msg_upper in ("CATALOGUE", "CATALOG", "PRICE LIST", "SEND LIST", "BROCHURE", "CATALOUGE", "CATALOGE", "CATALOUGR", "CATLOG"):
             from core.redis_client import get_redis
             r = get_redis()
             dynamic_url = await r.get(settings.catalogue_redis_key)
@@ -455,20 +505,73 @@ async def whatsapp_inbound_webhook(
             logger.info(f"[ONBOARD] {sender_phone} requested catalogue")
             return Response(status_code=200, content="ok")
 
+        # ── 3.4 Explicit Menu & Greetings ────────────────────────
+        import re
+        # Remove punctuation for cleaner comparison
+        cleaned_msg = re.sub(r'[^\w\s]', '', msg_upper).strip()
+        basic_greetings = {
+            "HI", "HELLO", "HEY", "GOOD MORNING", "GOOD AFTERNOON", 
+            "GOOD EVENING", "HI THERE", "HELLO SIR", "HI SIR", "HEY THERE", 
+            "NAMASTE", "HALLO", "HII", "HIIO", "HELO"
+        }
+        
+        if cleaned_msg == "MENU" or cleaned_msg in basic_greetings:
+            await menu_service.clear_menu_state(sender_phone)
+            
+            if cleaned_msg != "MENU":
+                # Explicit greeting & text if the user said hi
+                greeting_msg = (
+                    f"Hello! Welcome to *Devraj Traders*. 🏢\n\n"
+                    f"I am your AI assistant, ready to answer your questions and help you with our latest products and offers. 😊"
+                )
+                await adapter.send_message(phone=sender_phone, message=greeting_msg)
+            
+            await menu_service.send_main_menu(adapter, sender_phone)
+            logger.info(f"[MENU] {sender_phone} greeted/requested menu directly: {cleaned_msg}")
+            return Response(status_code=200, content="ok")
+
+        # ── Menu state machine (Priority 4) ───────────────────────────────────
+        menu_handled = await menu_service.handle_menu_input(
+            adapter=adapter,
+            phone=sender_phone,
+            msg=message_text,
+            button_payload=button_payload,
+            list_id=list_id,
+            db=db,
+        )
+        if menu_handled:
+            return Response(status_code=200, content="ok")
+
         # ── Pass to RAG bot as normal ──────────────────────────────────────
         client_id = str(client.id)
-        
+
         if not sent_typing_indicator:
             await adapter.send_message(
                 phone=sender_phone,
                 message="Got your message! ⏳ Give me a moment..."
             )
-            
-        await run_bot(
-            phone=sender_phone,
-            raw_message=message_text,
-            client_id=client_id,
-            db=db,
-        )
+
+        logger.info(f"[WA WEBHOOK] Calling run_bot for {sender_phone} | client_id={client_id} | msg={message_text[:60]}")
+        try:
+            await run_bot(
+                phone=sender_phone,
+                raw_message=message_text,
+                client_id=client_id,
+                db=db,
+            )
+            logger.info(f"[WA WEBHOOK] run_bot completed for {sender_phone}")
+        except Exception as bot_exc:
+            logger.error(
+                f"[WA WEBHOOK] run_bot CRASHED for {sender_phone}: "
+                f"{type(bot_exc).__name__}: {bot_exc}",
+                exc_info=True,
+            )
+            try:
+                await adapter.send_message(
+                    phone=sender_phone,
+                    message="Sorry, something went wrong on our end. Please try again in a moment! 🙏",
+                )
+            except Exception:
+                pass
 
     return Response(status_code=200, content="ok")

@@ -43,7 +43,7 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
     """
     lang_label = "Hindi" if client.language == "hi" else "English"
     prompt = (
-        f"You are a WhatsApp sales assistant for a solar energy company.\n"
+        f"You are a WhatsApp sales assistant for Devraj Traders.\n"
         f"The business owner wants to send this message to a client:\n"
         f'"{owner_message}"\n\n'
         f"Client profile:\n"
@@ -52,9 +52,12 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
         f"Write a personalised WhatsApp message for this specific client:\n"
         f"- Address them by name naturally\n"
         f"- Write entirely in {lang_label}\n"
-        f"- Keep it 2-3 sentences, friendly and concise\n"
+        f"- Keep it friendly, concise, and highly engaging\n"
         f"- Preserve the owner's core offer/information\n"
         f"- Do NOT add subject lines or formal greetings like 'Dear'\n"
+        f"- FORMATTING: Use WhatsApp formatting (*bold*) to highlight key terms like product names, prices, and special offers.\n"
+        f"- EMOJIS: Include 2-3 relevant emojis strategically to make the message visually appealing.\n"
+        f"- STRUCTURE: Break up the text into short, scannable lines or bullet points instead of one big paragraph.\n"
         f"Respond with ONLY the message text, nothing else."
     )
     try:

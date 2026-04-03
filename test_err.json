@@ -1,0 +1,1 @@
+{"code":20001,"message":"Bad request: types.twilioListPicker.items[0].item: must not be null","more_info":"https://www.twilio.com/docs/errors/20001","status":400}

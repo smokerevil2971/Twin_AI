@@ -19,7 +19,7 @@ import io
 import chromadb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, delete as sa_delete
 from fastapi import HTTPException
 
 from core.config import settings
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".txt", ".md"}
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".txt", ".md", ".docx"}
 MAX_FILE_SIZE_BYTES = settings.max_upload_size_mb * 1024 * 1024
 
 
@@ -78,6 +78,23 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 
     elif ext in {".txt", ".md"}:
         text = file_bytes.decode("utf-8", errors="replace")
+
+    elif ext == ".docx":
+        import docx
+        doc = docx.Document(io.BytesIO(file_bytes))
+        parts = []
+        # Extract paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        # Extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    parts.append(row_text)
+        text = "\n".join(parts)
+        logger.info(f"[KB] Extracted {len(parts)} paragraphs/rows from Word document")
 
     else:
         raise HTTPException(400, f"Unsupported file type: {ext}")
@@ -436,6 +453,50 @@ async def delete_document(
     await db.commit()
 
     return {"id": str(doc_id), "status": "deleted"}
+
+
+# ─── Clear all documents ──────────────────────────────────────────────────────
+
+
+async def clear_all_documents(db: AsyncSession) -> dict:
+    """
+    Wipe the entire knowledge base:
+    1. Delete and recreate the ChromaDB collection (fastest bulk-delete).
+    2. Hard-delete all KnowledgeBase rows from Postgres.
+
+    Returns a summary dict with counts.
+    """
+    # Count rows before deletion for the response
+    total = (await db.execute(select(func.count()).select_from(KnowledgeBase))).scalar_one()
+
+    # ── ChromaDB: drop & recreate collection ──────────────────────────────────
+    try:
+        client = get_chroma_client()
+        try:
+            client.delete_collection("knowledge_base")
+            logger.info("[KB] ChromaDB collection 'knowledge_base' dropped")
+        except Exception as e:
+            logger.warning(f"[KB] Could not drop ChromaDB collection: {e}")
+        # Recreate an empty collection so subsequent uploads work immediately
+        client.get_or_create_collection(
+            name="knowledge_base",
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info("[KB] ChromaDB collection 'knowledge_base' recreated (empty)")
+    except Exception as e:
+        logger.error(f"[KB] ChromaDB clear failed: {e}")
+        raise HTTPException(503, f"ChromaDB clear failed: {str(e)}")
+
+    # ── Postgres: hard-delete all KB records ──────────────────────────────────
+    await db.execute(sa_delete(KnowledgeBase))
+    await db.commit()
+    logger.info(f"[KB] Deleted {total} KnowledgeBase records from Postgres")
+
+    return {
+        "status": "cleared",
+        "documents_removed": total,
+        "message": f"Knowledge base cleared. {total} document(s) removed.",
+    }
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────

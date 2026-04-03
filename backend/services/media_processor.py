@@ -90,11 +90,11 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
 
         caption_hint = f' The client added this caption: "{caption}".' if caption else ""
         prompt = (
-            "You are a solar energy product expert assistant. "
+            "You are an expert product assistant for Devraj Traders. "
             "The client has sent an image via WhatsApp." + caption_hint + " "
             "Describe what you see in 1-2 sentences and extract any relevant question or context "
-            "that would help you answer a question about solar products. "
-            "If it's a solar panel, inverter, or installation, note the specifics. "
+            "that would help you answer a question about our products. "
+            "Note any specific details about the products shown. "
             "If it's a document (invoice, quote), summarize the key figures."
         )
 

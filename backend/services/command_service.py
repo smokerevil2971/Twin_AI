@@ -1,16 +1,17 @@
 """
 Owner Command Service — Phase 2 Refactor
 
-Extracts all owner command handlers from the monolithic webhooks.py into a
-dedicated, testable service module. The webhook route now calls a single
-`dispatch_owner_command(...)` entry point and returns the FastAPI Response.
-
 Supported commands:
   /help, /status, /clients, /report, /catalogue=<url>
+  /products, /offers
   BROADCAST: <msg>
   SCHEDULE: YYYY-MM-DD HH:MM <msg>
   ADD: <phone>, <name>
   REMOVE: <phone>
+  PRODUCT: <name> | <price> | <description>
+  OFFER: <title> | <description>
+  DEL PRODUCT: <name>
+  DEL OFFER: <title>
   <CSV/XLSX media>  → bulk client import
   <PDF/DOCX/TXT media>  → knowledge base ingestion
   Anything else → falls through to the RAG bot
@@ -27,11 +28,17 @@ from sqlalchemy import select, func
 
 from core.config import settings
 from core.database import get_db_context, AsyncSessionLocal
-from models.models import Broadcast, BroadcastRecipient, Client
+from models.models import Broadcast, BroadcastRecipient, Client, Product, Offer
 from services.broadcast_service import create_broadcast
 from services.client_service import import_clients, parse_upload_file, detect_column_mapping
 from services.gupshup_adapter import get_messaging_adapter
 from services import knowledge_service
+from services.products_offers_service import (
+    parse_products_file,
+    parse_offers_file,
+    bulk_import_products,
+    bulk_import_offers,
+)
 from tasks.broadcast_tasks import send_broadcast
 
 logger = logging.getLogger(__name__)
@@ -85,51 +92,34 @@ async def dispatch_owner_command(
         await adapter.send_message(
             phone=sender_phone,
             message=(
-                "🤖 *TwinAI Owner Bot — Help Guide*\n\n"
-
+                "🤖 *Devraj Traders Admin Bot — Quick Guide*\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "📢 *BROADCAST* — Send to all clients now\n"
-                "Format: `BROADCAST: <your message>`\n"
-                "Example: _BROADCAST: 🎉 Flash sale today! 20% off all solar panels._\n\n"
-
+                "🛍️ *MANAGE YOUR MENU*\n"
+                "Add a Product: `PRODUCT: Fan | 1500 | Fast ceiling fan`\n"
+                "Add an Offer: `OFFER: Sale | 10% off all fans`\n\n"
+                "To remove, type `DEL PRODUCT: Fan` or `DEL OFFER: Sale`.\n"
+                "To see everything, type `/products` or `/offers`.\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "🕐 *SCHEDULE* — Send at a specific date & time (IST)\n"
-                "Format: `SCHEDULE: YYYY-MM-DD HH:MM <your message>`\n"
-                "Example: _SCHEDULE: 2026-03-25 10:00 New inverter stock is live!_\n\n"
-
+                "📢 *SEND BROADCASTS*\n"
+                "Send to everyone right now:\n"
+                "`BROADCAST: Hello! Fresh stock is here.`\n\n"
+                "Schedule for later (YYYY-MM-DD HH:MM):\n"
+                "`SCHEDULE: 2026-04-05 10:00 New sale starting!`\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "👤 *ADD CLIENT* — Add one client by phone\n"
-                "Format: `ADD: <phone>, <Name>`\n"
-                "Example: _ADD: 9876543210, Ravi Kumar_\n\n"
-
+                "👥 *MANAGE CLIENTS*\n"
+                "Add someone: `ADD: 9876543210, Rahul`\n"
+                "Remove someone: `REMOVE: 9876543210`\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "🗑️ *REMOVE CLIENT* — Remove client by phone\n"
-                "Format: `REMOVE: <phone>`\n"
-                "Example: _REMOVE: 9876543210_\n\n"
-
+                "📁 *EASY UPLOADS (Just send the file!)*\n"
+                "• CSV/Excel: Just type `products`, `offers`, or `clients` as the caption to upload multiple items instantly.\n"
+                "• PDF/Word: Type `documents`, `products`, or `offers` as the caption to teach the AI from your file.\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "📋 *BULK IMPORT* — Send a CSV or Excel file\n"
-                "Required columns: `name`, `phone`\n"
-                "Optional column: `email`\n"
-                "All imported clients will be opted-in automatically.\n\n"
-
-                "━━━━━━━━━━━━━━━━━━\n"
-                "📚 *ADD TO KNOWLEDGE BASE* — Send a PDF or Word doc\n"
-                "Caption = category: `products` / `offers` / `documents`\n"
-                "Supported: PDF, DOCX, DOC, TXT\n\n"
-
-                "━━━━━━━━━━━━━━━━━━\n"
-                "📊 *COMMANDS*\n"
-                "• `/status` — Platform stats\n"
-                "• `/clients` — Opted-in count\n"
-                "• `/report` — Broadcast analytics\n"
-                "• `/catalogue= URL` — Set catalogue link\n"
-                "• `/help` — This guide\n\n"
-
-                "━━━━━━━━━━━━━━━━━━\n"
-                "🧪 *TEST THE BOT*\n"
-                "Send any message without a prefix to test the RAG bot.\n"
-                "Example: _what is the price of solar inverter?_"
+                "📊 *REPORTS*\n"
+                "`/status` — General stats\n"
+                "`/clients` — Client count\n"
+                "`/report` — Last broadcast results\n"
+                "`/catalogue=<link>` — Update product catalogue link\n\n"
+                "📝 _Tip: To test the AI, just ask me any normal question!_"
             ),
         )
         return Response(status_code=200, content="ok")
@@ -147,7 +137,7 @@ async def dispatch_owner_command(
         await adapter.send_message(
             phone=sender_phone,
             message=(
-                f"📊 *TwinAI Status*\n\n"
+                f"📊 *Devraj Traders Status*\n\n"
                 f"👥 Opted-in clients: *{total_clients}*\n"
                 f"📤 Last broadcast: *{lb_str}*\n\n"
                 f"Type `/help` to see all commands & formats."
@@ -431,9 +421,12 @@ async def dispatch_owner_command(
             await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove client: {str(exc)[:120]}")
         return Response(status_code=200, content="ok")
 
-    # ── Owner sends CSV/XLSX → bulk import clients ────────────────────────────
+    # ── Owner sends CSV/XLSX → bulk import based on caption ───────────────────
     if media_url and media_type and media_type.lower() in _CLIENT_SHEET_TYPES:
-        logger.info(f"[CMD] Client spreadsheet received ({media_type})")
+        caption = (msg or "").strip().lower()
+        target = caption if caption in ("products", "offers", "clients") else "clients"
+        logger.info(f"[CMD] Spreadsheet received ({media_type}) — Target: {target}")
+
         try:
             async with httpx.AsyncClient(timeout=settings.file_download_timeout_seconds, follow_redirects=True) as hclient:
                 if settings.messaging_provider == "twilio" and settings.twilio_account_sid:
@@ -447,35 +440,62 @@ async def dispatch_owner_command(
                 file_bytes = resp.content
 
             ext = ".xlsx" if "spreadsheetml" in media_type.lower() else ".csv"
-            filename = f"clients_import{ext}"
+            filename = f"bulk_import_{target}{ext}"
 
             async with AsyncSessionLocal() as db:
-                rows = parse_upload_file(file_bytes, filename)
-                columns = list(rows[0].keys()) if rows else []
-                col_map = detect_column_mapping(columns)
-                summary = await import_clients(
-                    db=db,
-                    content=file_bytes,
-                    filename=filename,
-                    column_mapping=col_map,
-                    set_opted_in=True,
-                )
+                if target == "products":
+                    parsed = parse_products_file(file_bytes, filename)
+                    if not parsed["rows"]:
+                        raise ValueError("No data rows found or missing 'name' column.")
+                    summary = await bulk_import_products(db, parsed["rows"])
+                    imported = summary.get("imported", 0)
+                    skipped = summary.get("skipped", 0)
+                    response_msg = (
+                        f"✅ *Products Import complete!*\n"
+                        f"✅ Imported: *{imported}*\n"
+                        f"⏭️ Skipped (errors/missing names): *{skipped}*\n\n"
+                        f"_Products are now live on the client menu._"
+                    )
 
-            imported = summary.get("imported", 0)
-            skipped = summary.get("skipped_duplicates", 0) + summary.get("skipped_invalid", 0)
-            await adapter.send_message(
-                phone=sender_phone,
-                message=(
-                    f"✅ *Client import complete!*\n"
-                    f"✅ Imported: *{imported}*\n"
-                    f"⏭️ Skipped (duplicates/invalid): *{skipped}*\n\n"
-                    f"_All imported clients are opted-in._\n"
-                    f"CSV column names expected: `name`, `phone`, `email` (optional)"
-                ),
-            )
-            logger.info(f"[CMD] Client import: {imported} imported, {skipped} skipped")
+                elif target == "offers":
+                    parsed = parse_offers_file(file_bytes, filename)
+                    if not parsed["rows"]:
+                        raise ValueError("No data rows found or missing 'title' column.")
+                    summary = await bulk_import_offers(db, parsed["rows"])
+                    imported = summary.get("imported", 0)
+                    skipped = summary.get("skipped", 0)
+                    response_msg = (
+                        f"✅ *Offers Import complete!*\n"
+                        f"✅ Imported: *{imported}*\n"
+                        f"⏭️ Skipped (errors/missing titles): *{skipped}*\n\n"
+                        f"_Offers are now live on the client menu._"
+                    )
+
+                else:
+                    # Default: clients
+                    rows = parse_upload_file(file_bytes, filename)
+                    columns = list(rows[0].keys()) if rows else []
+                    col_map = detect_column_mapping(columns)
+                    summary = await import_clients(
+                        db=db,
+                        content=file_bytes,
+                        filename=filename,
+                        column_mapping=col_map,
+                        set_opted_in=True,
+                    )
+                    imported = summary.get("imported", 0)
+                    skipped = summary.get("skipped_duplicates", 0) + summary.get("skipped_invalid", 0)
+                    response_msg = (
+                        f"✅ *Client Import complete!*\n"
+                        f"✅ Imported: *{imported}*\n"
+                        f"⏭️ Skipped (duplicates/invalid): *{skipped}*\n\n"
+                        f"_All imported clients are opted-in._"
+                    )
+
+            await adapter.send_message(phone=sender_phone, message=response_msg)
+            logger.info(f"[CMD] {target.capitalize()} import: {imported} imported, {skipped} skipped")
         except Exception as exc:
-            logger.error(f"[CMD] Client import failed: {exc}")
+            logger.error(f"[CMD] {target.capitalize()} import failed: {exc}")
             try:
                 await adapter.send_message(phone=sender_phone, message=f"❌ Import failed: {str(exc)[:150]}")
             except Exception:
@@ -535,6 +555,184 @@ async def dispatch_owner_command(
                 )
             except Exception:
                 pass
+        return Response(status_code=200, content="ok")
+
+    # ── /products — list all active products ────────────────────────────────
+    if msg.lower() == "/products":
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Product).where(Product.is_active == True).order_by(Product.name)
+            )
+            products = result.scalars().all()
+
+        if not products:
+            await adapter.send_message(
+                phone=sender_phone,
+                message="📦 No products yet. Add one with:\n`PRODUCT: <name> | <price> | <description>`",
+            )
+        else:
+            lines = [f"📦 *Products ({len(products)})*\n"]
+            for i, p in enumerate(products, 1):
+                price_str = f"₹{p.price:,.0f}" if p.price else "Price on request"
+                desc = f" — {p.description[:50]}" if p.description else ""
+                lines.append(f"{i}. *{p.name}* ({price_str}){desc}")
+            lines.append("\n_Use `DEL PRODUCT: <name>` to remove._")
+            await adapter.send_message(phone=sender_phone, message="\n".join(lines))
+        return Response(status_code=200, content="ok")
+
+    # ── /offers — list all active offers ─────────────────────────────────────
+    if msg.lower() == "/offers":
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Offer).where(Offer.is_active == True).order_by(Offer.title)
+            )
+            offers = result.scalars().all()
+
+        if not offers:
+            await adapter.send_message(
+                phone=sender_phone,
+                message="💰 No offers yet. Add one with:\n`OFFER: <title> | <description>`",
+            )
+        else:
+            lines = [f"💰 *Offers ({len(offers)})*\n"]
+            for i, o in enumerate(offers, 1):
+                desc = f" — {o.description[:60]}" if o.description else ""
+                lines.append(f"{i}. *{o.title}*{desc}")
+            lines.append("\n_Use `DEL OFFER: <title>` to remove._")
+            await adapter.send_message(phone=sender_phone, message="\n".join(lines))
+        return Response(status_code=200, content="ok")
+
+    # ── PRODUCT: <name> | <price> | <description> ────────────────────────────
+    product_add_match = re.match(
+        r"(?i)^product:\s*(.+?)\s*\|\s*([\d.,]*)\s*(?:\|\s*(.+))?$", msg.strip()
+    )
+    if product_add_match:
+        name = product_add_match.group(1).strip()
+        price_raw = product_add_match.group(2).strip().replace(",", "")
+        description = (product_add_match.group(3) or "").strip() or None
+        price = float(price_raw) if price_raw else None
+
+        try:
+            async with AsyncSessionLocal() as db:
+                # Check for duplicate
+                existing = (await db.execute(
+                    select(Product).where(Product.name.ilike(name), Product.is_active == True)
+                )).scalar_one_or_none()
+                if existing:
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"⚠️ Product already exists: *{existing.name}*\nUse `DEL PRODUCT: {existing.name}` first to replace it.",
+                    )
+                else:
+                    product = Product(name=name, description=description, price=price, is_active=True)
+                    db.add(product)
+                    await db.commit()
+                    price_str = f"₹{price:,.0f}" if price else "Price on request"
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=(
+                            f"✅ *Product added!*\n"
+                            f"🛍️ Name: *{name}*\n"
+                            f"💰 Price: {price_str}\n"
+                            f"📝 Description: {description or '—'}\n\n"
+                            f"_It will now appear in the client product menu._"
+                        ),
+                    )
+                    logger.info(f"[CMD] Product added: {name} @ {price}")
+        except Exception as exc:
+            logger.error(f"[CMD] PRODUCT add failed: {exc}")
+            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add product: {str(exc)[:120]}")
+        return Response(status_code=200, content="ok")
+
+    # ── OFFER: <title> | <description> ───────────────────────────────────────
+    offer_add_match = re.match(
+        r"(?i)^offer:\s*(.+?)\s*\|\s*(.+)$", msg.strip(), re.DOTALL
+    )
+    if offer_add_match:
+        title = offer_add_match.group(1).strip()
+        description = offer_add_match.group(2).strip()
+
+        try:
+            async with AsyncSessionLocal() as db:
+                existing = (await db.execute(
+                    select(Offer).where(Offer.title.ilike(title), Offer.is_active == True)
+                )).scalar_one_or_none()
+                if existing:
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"⚠️ Offer already exists: *{existing.title}*\nUse `DEL OFFER: {existing.title}` first to replace it.",
+                    )
+                else:
+                    offer = Offer(title=title, description=description, is_active=True)
+                    db.add(offer)
+                    await db.commit()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=(
+                            f"✅ *Offer added!*\n"
+                            f"💰 Title: *{title}*\n"
+                            f"📝 Description: {description}\n\n"
+                            f"_It will now appear in the client offers menu._"
+                        ),
+                    )
+                    logger.info(f"[CMD] Offer added: {title}")
+        except Exception as exc:
+            logger.error(f"[CMD] OFFER add failed: {exc}")
+            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add offer: {str(exc)[:120]}")
+        return Response(status_code=200, content="ok")
+
+    # ── DEL PRODUCT: <name> ───────────────────────────────────────────────────
+    del_product_match = re.match(r"(?i)^del\s+product:\s*(.+)$", msg.strip())
+    if del_product_match:
+        name = del_product_match.group(1).strip()
+        try:
+            async with AsyncSessionLocal() as db:
+                product = (await db.execute(
+                    select(Product).where(Product.name.ilike(name), Product.is_active == True)
+                )).scalar_one_or_none()
+                if not product:
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"⚠️ No active product found matching: *{name}*\nUse `/products` to see all products.",
+                    )
+                else:
+                    product.is_active = False
+                    await db.commit()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"🗑️ Product removed: *{product.name}*\n_It will no longer appear in the client menu._",
+                    )
+                    logger.info(f"[CMD] Product deactivated: {product.name}")
+        except Exception as exc:
+            logger.error(f"[CMD] DEL PRODUCT failed: {exc}")
+            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove product: {str(exc)[:120]}")
+        return Response(status_code=200, content="ok")
+
+    # ── DEL OFFER: <title> ────────────────────────────────────────────────────
+    del_offer_match = re.match(r"(?i)^del\s+offer:\s*(.+)$", msg.strip())
+    if del_offer_match:
+        title = del_offer_match.group(1).strip()
+        try:
+            async with AsyncSessionLocal() as db:
+                offer = (await db.execute(
+                    select(Offer).where(Offer.title.ilike(title), Offer.is_active == True)
+                )).scalar_one_or_none()
+                if not offer:
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"⚠️ No active offer found matching: *{title}*\nUse `/offers` to see all offers.",
+                    )
+                else:
+                    offer.is_active = False
+                    await db.commit()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"🗑️ Offer removed: *{offer.title}*\n_It will no longer appear in the client menu._",
+                    )
+                    logger.info(f"[CMD] Offer deactivated: {offer.title}")
+        except Exception as exc:
+            logger.error(f"[CMD] DEL OFFER failed: {exc}")
+            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove offer: {str(exc)[:120]}")
         return Response(status_code=200, content="ok")
 
     # ── No command matched — owner is testing the RAG bot ────────────────────

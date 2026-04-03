@@ -128,6 +128,7 @@ class BotState(TypedDict):
     fallback_reason: str  # "" | "rate_limit" | "injection" | "no_context"
     done: bool
     enquiry_intent: bool
+    is_menu_request: bool  # NEW — bypass confidence flags
     _db: Any  # AsyncSession — passed through graph, not modified
 
 
@@ -208,6 +209,8 @@ async def embed_node(state: BotState) -> dict:
     so they do NOT block the async event loop.
     """
     loop = asyncio.get_event_loop()
+    provider = "nim" if settings.is_nim else "gemini"
+    logger.info(f"[BOT][EMBED] Starting embedding via {provider} for: {state['clean_message'][:60]}")
     try:
         if settings.is_nim:
             embedding = await loop.run_in_executor(
@@ -217,9 +220,10 @@ async def embed_node(state: BotState) -> dict:
             embedding = await loop.run_in_executor(
                 None, _embed_gemini, state["clean_message"]
             )
+        logger.info(f"[BOT][EMBED] OK — vector dim={len(embedding)}")
         return {"query_embedding": embedding}
     except Exception as e:
-        logger.error(f"[BOT] embed failed: {e}")
+        logger.error(f"[BOT][EMBED] FAILED via {provider}: {type(e).__name__}: {e}", exc_info=True)
         return {"query_embedding": [], "done": True, "fallback_reason": "no_context"}
 
 
@@ -446,15 +450,17 @@ async def generate_node(state: BotState) -> dict:
         return {"done": True, "fallback_reason": "no_context"}
 
     loop = asyncio.get_event_loop()
+    provider = "nim" if settings.is_nim else "gemini"
+    logger.info(f"[BOT][GENERATE] Starting generation via {provider}")
     try:
         if settings.is_nim:
             response_text = await loop.run_in_executor(None, _generate_nim, prompt)
         else:
             response_text = await loop.run_in_executor(None, _generate_gemini, prompt)
-        logger.info(f"[BOT] generated response ({len(response_text)} chars)")
+        logger.info(f"[BOT][GENERATE] OK — response {len(response_text)} chars via {provider}")
         return {"response": response_text}
     except Exception as e:
-        logger.error(f"[BOT] generation failed: {e}")
+        logger.error(f"[BOT][GENERATE] FAILED via {provider}: {type(e).__name__}: {e}", exc_info=True)
         return {"fallback_reason": "no_context", "done": True}
 
 
@@ -494,8 +500,14 @@ def confidence_check_node(state: BotState) -> dict:
         confidence = 0.0
     else:
         confidence = round(max(0.0, 1.0 - (min(dists) / 2.0)), 4)
+    
     flagged = confidence < settings.rag_confidence_threshold
-    logger.info(f"[BOT] confidence={confidence}, flagged={flagged}")
+    
+    # Bypass flagging if this is a deterministic menu selection
+    if state.get("is_menu_request"):
+        flagged = False
+        
+    logger.info(f"[BOT] confidence={confidence}, flagged={flagged} (menu_request={state.get('is_menu_request', False)})")
     return {"confidence_score": confidence, "flagged": flagged}
 
 
@@ -568,7 +580,7 @@ async def fallback_node(state: BotState) -> dict:
         # Try to answer from general knowledge instead of a static message
         lang_label = "Hindi" if lang == "hi" else "English"
         prompt = (
-            f"You are a friendly WhatsApp customer service assistant for a solar energy company.\n"
+            f"You are a friendly WhatsApp customer service assistant for Devraj Traders.\n"
             f"Answer the customer's question as helpfully as possible based on your general knowledge.\n"
             f"If you don't know the specific answer, invite them to contact us for details.\n"
             f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences.\n"
@@ -600,43 +612,50 @@ async def output_node(state: BotState) -> dict:
     """Send response via messaging adapter and log Conversation to Postgres."""
     response = state.get("response", FALLBACK_MSGS["en"])
 
+    logger.info(f"[BOT][OUTPUT] Sending response to {state['phone']} | fallback_reason={state.get('fallback_reason','')} | len={len(response)}")
+    logger.debug(f"[BOT][OUTPUT] Response preview: {response[:120]}")
+
     adapter = _get_adapter()
     try:
-        await adapter.send_message(phone=state["phone"], message=response)
+        result = await adapter.send_message(phone=state["phone"], message=response)
+        logger.info(f"[BOT][OUTPUT] send_message OK → {result}")
 
         from core.redis_client import add_conversation_history
 
         await add_conversation_history(state["phone"], state["raw_message"], response)
     except Exception as e:
-        logger.error(f"[BOT] send_message failed: {e}")
+        logger.error(f"[BOT][OUTPUT] send_message FAILED for {state['phone']}: {type(e).__name__}: {e}", exc_info=True)
 
     db = state.get("_db")
     if db:
         from models.models import Conversation
 
-        conv = Conversation(
-            client_id=uuid.UUID(state["client_id"]) if state.get("client_id") else None,
-            direction="inbound",
-            message=state["raw_message"],
-            response=response,
-            language=state.get("language", "en"),
-            confidence_score=state.get("confidence_score"),
-            flagged=state.get("flagged", False),
-            enquiry_intent=state.get("enquiry_intent", False),
-        )
-        db.add(conv)
-        await db.commit()
-        logger.info(f"[BOT] conversation logged (flagged={conv.flagged})")
+        try:
+            conv = Conversation(
+                client_id=uuid.UUID(state["client_id"]) if state.get("client_id") else None,
+                direction="inbound",
+                message=state["raw_message"],
+                response=response,
+                language=state.get("language", "en"),
+                confidence_score=state.get("confidence_score"),
+                flagged=state.get("flagged", False),
+                enquiry_intent=state.get("enquiry_intent", False),
+            )
+            db.add(conv)
+            await db.commit()
+            logger.info(f"[BOT] conversation logged (flagged={conv.flagged})")
 
-        # Async best-effort: compute + store embedding for long-term memory
-        # Runs after commit so the row exists; failures are non-fatal
-        if state.get("client_id") and state.get("query_embedding"):
-            try:
-                from services.memory_service import embed_and_save
+            # Async best-effort: compute + store embedding for long-term memory
+            # Runs after commit so the row exists; failures are non-fatal
+            if state.get("client_id") and state.get("query_embedding"):
+                try:
+                    from services.memory_service import embed_and_save
 
-                asyncio.create_task(embed_and_save(conv.id, state["raw_message"], db))
-            except Exception as e:
-                logger.warning(f"[BOT] embed_and_save task creation failed: {e}")
+                    asyncio.create_task(embed_and_save(conv.id, state["raw_message"], db))
+                except Exception as e:
+                    logger.warning(f"[BOT] embed_and_save task creation failed: {e}")
+        except Exception as db_exc:
+            logger.error(f"[BOT][OUTPUT] DB logging failed: {type(db_exc).__name__}: {db_exc}", exc_info=True)
 
     return {}
 
@@ -731,6 +750,7 @@ async def run_bot(
     raw_message: str,
     client_id: str | None = None,
     db=None,
+    is_menu_request: bool = False,
 ) -> dict:
     """
     Runs the full RAG pipeline and returns the final state.
@@ -757,6 +777,7 @@ async def run_bot(
         "fallback_reason": "",
         "done": False,
         "enquiry_intent": False,
+        "is_menu_request": is_menu_request,
         "_db": db,
     }
     final_state = await _rag_graph.ainvoke(initial)

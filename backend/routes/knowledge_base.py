@@ -80,6 +80,23 @@ async def list_documents(
     return success_response(result)
 
 
+# ─── DELETE /knowledge-base (clear ALL) ──────────────────────────────────────
+
+@router.delete("", status_code=200)
+async def clear_all_documents(
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    ⚠️  Destructive — wipes the entire knowledge base.
+    Drops and recreates the ChromaDB collection (all vectors gone)
+    and hard-deletes every KnowledgeBase record from Postgres.
+    Use before loading a fresh knowledge base.
+    """
+    result = await knowledge_service.clear_all_documents(db=db)
+    return success_response(result)
+
+
 # ─── DELETE /knowledge-base/{id} ─────────────────────────────────────────────
 
 @router.delete("/{doc_id}", status_code=200)
