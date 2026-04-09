@@ -1,11 +1,11 @@
-name,description,price,is_active
-Gyproc Gypsum Board,"A high-performance plasterboard used for false ceilings, dry walls, and partitions. Manufactured by Saint-Gobain under the Gyproc brand, it delivers superior fire and sound resistance.",350,true
-Gyproc Gypsum Plaster,"An eco-friendly, ready-to-use gypsum-based plaster that replaces traditional sand-cement application. Ideal for internal plastering surfaces with no water curing required.",380,true
-"Fiber Cement Board (Normal & Plus)","Multi-use fiber cement sheets suitable for interior and exterior applications including partitions, cladding, flooring, and false ceilings.",45,true
-Premium Plank & Designer Boards,"Aesthetically superior fiber cement planks and designer boards for external cladding, garden fencing, and gate cladding.",85,true
-PVC Ceiling & Tiles,"A range of PVC ceiling systems including laminated gypsum, G.I. metal ceiling, T-grid, and acrylic sheets.",35,true
-Plastic & PVC Gypsum Ceiling Tiles,"Decorative ceiling tiles in plastic and PVC gypsum variants. Multiple design patterns, easy DIY installation, and excellent cost-to-value ratio.",18,true
-PVC Wooden Panel,"Wood-finish PVC wall and ceiling panels in groove designs, wallpaper patterns, hot stamping, and WPC variants.",40,true
-"Gypframe Expert (Metal Framing System)","A complete metal framing solution for gypsum board partitions and false ceilings. Includes ceiling sections, perimeter channels, ceiling angles, and intermediate channels.",80,true
-Ready-Made Wall Panels,"Pre-finished wall panels for quick interior wall finishing without plastering. Available in various textures and finishes for both residential and commercial use.",55,true
-T-Grid False Ceiling System,"A suspended ceiling grid system (T-bar / T-grid) used to hold ceiling tiles, fiber cement boards, or gypsum boards.",25,true
+name,description,price,is_active,image_url
+Gyproc Gypsum Board,"High-performance plasterboard.",350,true,https://drive.google.com/uc?export=download&id=1k-ghWAQisCKfVpvePii1RVN-8GH7sOVU
+Gyproc Gypsum Plaster,"Ready-to-use gypsum plaster.",380,true,https://drive.google.com/uc?export=download&id=1sJaNLTONT9iuU5lxyFxrFSpqMS7V8tXa
+"Fiber Cement Board (Normal & Plus)","Multi-use fiber cement sheets.",45,true,https://drive.google.com/uc?export=download&id=1xkLpc1VhmbNgEYIK9mQ2ukrBf6GxatoH
+Premium Plank & Designer Boards,"Fiber cement planks for cladding.",85,true,https://drive.google.com/uc?export=download&id=1Z-vjQTp6YdreDGXA2qnanyq-iSfI001M
+PVC Ceiling & Tiles,"Versatile PVC ceiling systems.",35,true,https://drive.google.com/uc?export=download&id=1cpyV6voZ0zau2CFQGx6F40XlKQKRWXxP
+Plastic & PVC Gypsum Ceiling Tiles,"Decorative PVC ceiling tiles.",18,true,https://drive.google.com/uc?export=download&id=1otlpTIShYAcczeVu3rWjlptr6jmzImGi
+PVC Wooden Panel,"Wood-finish PVC panels.",40,true,https://drive.google.com/uc?export=download&id=1bdCm66kVLZCcSRP6dZP0KbI44k9Cl11_
+"Gypframe Expert (Metal Framing System)","Metal framing system.",80,true,https://drive.google.com/uc?export=download&id=1TEPTrpaU7qsJOSwv2m18rh6d_mHrl6t5
+Ready-Made Wall Panels,"Pre-finished wall panels.",55,true,https://drive.google.com/uc?export=download&id=1y9zo0R3yud9zvRWUJhDwcmpNNfjjVYyZ
+T-Grid False Ceiling System,"Suspended T-grid system.",25,true,https://drive.google.com/uc?export=download&id=1gzT_gHDDLUEH9y09MfyMLZwO8k6068HA

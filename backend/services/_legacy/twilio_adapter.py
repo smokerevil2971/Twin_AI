@@ -10,13 +10,13 @@ import hashlib
 
 import httpx
 
-from services.gupshup_adapter import GupshupAdapter
+from services.messaging_adapter import MessagingAdapter
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class TwilioAdapter(GupshupAdapter):
+class TwilioAdapter(MessagingAdapter):
     """
     Twilio WhatsApp adapter — implements the same
     GupshupAdapter interface so all existing code

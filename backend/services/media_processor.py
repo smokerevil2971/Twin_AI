@@ -31,22 +31,59 @@ RATE_LIMITED_MSG = (
 )
 
 
-async def download_media(url: str, account_sid: str = "", auth_token: str = "") -> bytes:
-    """Download media from a URL. Passes Basic Auth only when Twilio credentials are provided.
-
-    TC-021 fix: Under Gupshup mode, Gupshup media URLs are public CDN links and
-    do NOT need authentication. Sending empty Twilio credentials caused 401/403 errors.
-    Auth is now only added when the provider is Twilio and credentials are set.
+async def _resolve_meta_media(media_id: str) -> tuple[str, str]:
     """
-    auth = (account_sid, auth_token) if (account_sid and auth_token) else None
-    async with httpx.AsyncClient(timeout=settings.media_download_timeout_seconds, follow_redirects=True) as client:
-        resp = await client.get(url, auth=auth)
+    Resolve a Meta media_id to a temporary download URL + mime_type.
+    Steps:
+      1. GET graph.facebook.com/{version}/{media_id}
+           Authorization: Bearer {META_ACCESS_TOKEN}
+           Response: {"url": "...", "mime_type": "...", "file_size": ...}
+      2. Return (download_url, mime_type)
+    """
+    from core.config import settings
+    api_version = getattr(settings, "meta_api_version", "v19.0")
+    access_token = getattr(settings, "meta_access_token", "")
+    meta_url = f"https://graph.facebook.com/{api_version}/{media_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(meta_url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    return data.get("url", ""), data.get("mime_type", "application/octet-stream")
+
+
+async def download_media(
+    url: str,
+    account_sid: str = "",
+    auth_token: str = "",
+    bearer_token: str = "",
+) -> bytes:
+    """Download media from a URL.
+    - Twilio: Basic Auth (account_sid, auth_token)
+    - Meta:   Bearer token in Authorization header
+    - Gupshup/Mock: public CDN URLs, no auth needed
+    """
+    if bearer_token:
+        headers = {"Authorization": f"Bearer {bearer_token}"}
+        auth = None
+    elif account_sid and auth_token:
+        headers = {}
+        auth = (account_sid, auth_token)
+    else:
+        headers = {}
+        auth = None
+
+    async with httpx.AsyncClient(
+        timeout=settings.media_download_timeout_seconds,
+        follow_redirects=True,
+    ) as client:
+        resp = await client.get(url, auth=auth, headers=headers)
         resp.raise_for_status()
         return resp.content
 
 
 def _get_media_auth() -> tuple[str, str]:
-    """Returns Twilio credentials only when messaging_provider is 'twilio'."""
+    """Returns Basic Auth credentials for Twilio only. Meta uses Bearer token separately."""
     if settings.messaging_provider == "twilio":
         return settings.twilio_account_sid, settings.twilio_auth_token
     return "", ""
@@ -61,7 +98,21 @@ async def process_media(
     """
     Download and process a WhatsApp media attachment.
     Returns a text string suitable for feeding into the RAG pipeline.
+
+    For Meta provider: media_url is actually a media_id (no 'http' prefix).
+    We resolve it to a real URL + mime_type first.
     """
+    # Detect Meta media_id (looks like a numeric string, no http prefix)
+    if settings.messaging_provider == "meta" and media_url and not media_url.startswith("http"):
+        try:
+            real_url, detected_mime = await _resolve_meta_media(media_url)
+            if detected_mime:
+                content_type = detected_mime
+            media_url = real_url
+        except Exception as e:
+            logger.error(f"[MEDIA] Failed to resolve Meta media_id {media_url}: {e}")
+            return caption or "[Client sent media but it could not be retrieved]"
+
     mime_base = content_type.split(";")[0].strip().lower()
 
     if mime_base in IMAGE_TYPES:
@@ -84,7 +135,8 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
     logger.info(f"[MEDIA] Processing image: {content_type} via {settings.llm_provider}")
     try:
         sid, token = _get_media_auth()
-        raw = await download_media(media_url, sid, token)
+        bearer = getattr(settings, "meta_access_token", "") if settings.messaging_provider == "meta" else ""
+        raw = await download_media(media_url, sid, token, bearer_token=bearer)
         b64 = base64.b64encode(raw).decode()
         mime_base = content_type.split(";")[0].strip()
 
@@ -155,7 +207,8 @@ async def _process_pdf(media_url: str) -> str:
     logger.info("[MEDIA] Processing PDF document")
     try:
         sid, token = _get_media_auth()
-        raw = await download_media(media_url, sid, token)
+        bearer = getattr(settings, "meta_access_token", "") if settings.messaging_provider == "meta" else ""
+        raw = await download_media(media_url, sid, token, bearer_token=bearer)
         doc = fitz.open(stream=raw, filetype="pdf")
         pages_text = [page.get_text() for page in doc]
         full_text = "\n".join(pages_text).strip()
@@ -181,7 +234,8 @@ async def _process_audio(media_url: str, content_type: str) -> str:
     logger.info(f"[MEDIA] Processing audio: {content_type} via {settings.llm_provider}")
     try:
         sid, token = _get_media_auth()
-        raw = await download_media(media_url, sid, token)
+        bearer = getattr(settings, "meta_access_token", "") if settings.messaging_provider == "meta" else ""
+        raw = await download_media(media_url, sid, token, bearer_token=bearer)
         logger.info(f"[MEDIA] Audio downloaded: {len(raw)} bytes")
         b64 = base64.b64encode(raw).decode()
 

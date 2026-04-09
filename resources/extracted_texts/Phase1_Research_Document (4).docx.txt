@@ -1,0 +1,185 @@
+
+
+Phase 1 Progress
+
+Step 1 — Business Requirements & Scope
+Status: Complete  ·  February 2026
+
+Project Overview
+
+Messaging Channels — Day 1
+
+Operator UX Requirements
+The following are non-negotiable design constraints given the non-technical operator:
+Client upload accepts Excel or CSV only — no database tools required.
+Broadcast creation mirrors composing a standard messaging app message.
+Delivery reports use plain language: Sent, Delivered, Read, Failed.
+All retries, errors, and fallbacks are handled automatically by the system.
+
+Step 2 — Technology Stack
+Status: Complete  ·  February 2026
+All decisions below are final. Chosen for a solo developer, bootstrap budget, one-month deadline, and 500-client scale.
+
+Full Stack
+
+Messaging Providers & Costs
+
+Step 3 — System Architecture
+Status: Complete  ·  February 2026
+All components run on a single Hetzner CX21 server via Docker Compose. Two independent agent pipelines share a common database and knowledge base.
+
+3.1  System Architecture Overview
+
+
+3.2  Broadcast Flow
+
+
+3.3  Client Query Flow — RAG Pipeline
+
+
+3.4  Knowledge Base — Document Ingestion
+
+
+Step 4 — Database Schema
+Status: Complete  ·  February 2026
+8 tables in PostgreSQL. All primary keys are UUIDs. Timestamps stored in UTC. The schema is managed via Alembic migrations.
+
+4.1  Entity Relationship Diagram
+
+
+4.2  clients
+
+4.3  broadcasts
+
+4.4  broadcast_recipients
+
+4.5  conversations
+
+4.6  orders
+
+4.7  knowledge_base
+
+4.8  products
+
+4.9  offers
+
+Step 5 — API Contracts
+Status: Complete  ·  February 2026
+All endpoints are served by the FastAPI backend. Dashboard endpoints use JWT Bearer token authentication. Webhook endpoints use provider-specific signature verification.
+
+5.1  Authentication
+
+5.2  Client Management
+
+5.3  Broadcasts
+
+5.4  Knowledge Base
+
+5.5  Conversations
+
+5.6  Webhooks — Inbound Client Messages
+Each channel provider posts inbound messages to a dedicated endpoint. Signature verification is applied before any processing begins.
+
+
+5.7  Standard Response Format
+
+5.8  Auth Code Legend
+
+Step 6 — WhatsApp Business API Setup
+Status: Complete  ·  February 2026
+WhatsApp Business API requires official provider approval before any messages can be sent. This step must be started in Week 1 as approval takes 1–4 weeks. A new dedicated phone number will be used — it must never have been registered on WhatsApp before.
+
+6.1  Provider Comparison
+Four providers were evaluated. The final provider selection should be made before Week 1 ends.
+
+
+
+6.2  Pre-Registration Checklist
+Complete all items below before submitting the provider application.
+
+
+6.3  Message Template Requirements
+WhatsApp requires all outbound broadcast messages to use pre-approved templates. Template approval typically takes 24–48 hours.
+
+
+6.4  Recommended Templates to Prepare
+
+6.5  Compliance Requirements
+
+6.6  Estimated Timeline
+
+PM Review — Risks, Analytics & Safeguards
+Status: Complete  ·  February 2026
+This section documents six product-level improvements identified during senior PM review. All items are incorporated into the build plan before development begins.
+
+PM.1  MVP Scope Revision — WhatsApp First
+
+PM.2  Monitoring Stack
+Monitoring is non-optional from Day 1. A server crash with no alerting means hours of undetected downtime for a 24x7 client-facing system.
+
+
+PM.3  Offer Expiry Intelligence
+Without expiry filtering, the Client Assistant Bot will retrieve and present expired offers as current. This directly damages client trust.
+
+
+PM.4  Abuse Protection & Prompt Injection Guard
+The Client Assistant Bot receives free-text input from unknown clients. Without safeguards, prompt injection attacks can expose system information or produce off-brand responses.
+
+
+PM.5  Analytics KPIs
+Delivery tracking (sent/delivered/read/failed) is already in the schema. The following product-level KPIs are added to the analytics view in the proprietor dashboard.
+
+
+PM.6  Owner Onboarding Flow
+The system is only as effective as the owner's ability to use it correctly. An onboarding flow must be designed before launch so the proprietor understands how to operate the system from Day 1.
+
+
+PM.8  Scale Trigger Plan
+The single-server architecture is sufficient for Phase 1. The following table defines the exact thresholds at which infrastructure must be upgraded. Monitoring metrics from Sentry and UptimeRobot will surface these triggers automatically.
+
+
+PM.9  Conversation Quality Control
+Bot resolution rate and escalation rate measure quantity. Quality control measures whether the responses the bot does give are actually correct and useful. Without this, the bot can silently degrade without the owner noticing.
+
+
+PM.10  Revenue & Pricing Model
+Even if this system is built for a single business initially, defining the pricing model now ensures the architecture supports multi-tenancy and commercial expansion without redesign.
+
+
+
+PM.11  Tenant Isolation Design
+Multi-tenancy requires strict data isolation between business owners. Without enforcement, one tenant can inadvertently access another tenant's clients, broadcasts, or knowledge base. This must be built in from the first migration.
+
+
+PM.12  WhatsApp Quality Rating Safeguards
+The entire Phase 1 client communication channel depends on a single WhatsApp Business number. Meta assigns a quality rating to every number based on client engagement and block rates. A degraded rating reduces messaging limits and can result in a temporary or permanent ban. Protecting this number is a critical operational priority.
+
+
+
+PM.13  3-Year Product Vision
+This section defines the long-term product trajectory. Phase 1 builds the foundation. The value compounds as conversation memory, automation depth, and integration breadth grow over time.
+
+
+
+PM.14  Unit Economics Model
+Before scaling, the business must be profitable at each pricing tier. The following model uses conservative estimates based on the chosen tech stack costs.
+
+
+
+
+PM.15  Competitive Differentiation Matrix
+The Indian WhatsApp business messaging market has established players. The differentiation below explains why this product wins in the retail SMB segment specifically.
+
+
+
+PM.16  Execution Risk Register
+Identifying risks before building is the difference between a plan and a strategy. Each risk below has a defined probability, impact, and mitigation.
+
+
+PM.7  Revised Product Positioning
+
+Step 7 — Development Environment
+Pending — to be completed in the next session.
+
+Step 8 — Timeline & Ownership
+Pending — to be completed in the next session.

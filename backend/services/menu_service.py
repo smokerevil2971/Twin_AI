@@ -27,6 +27,7 @@ from core.redis_client import (
     get_menu_state, set_menu_state, clear_menu_state,
     get_menu_page, set_menu_page,
     MENU_STATE_MAIN, MENU_STATE_PRODUCTS, MENU_STATE_OFFERS,
+    increment_menu_counter,  # 2.3: analytics tap counting
 )
 from models.models import Product, Offer
 
@@ -45,9 +46,14 @@ MAIN_MENU_BUTTONS = [
     {"id": "catalog",  "title": "📄 Catalog"},
 ]
 
-# Special row IDs used for pagination control
-_ROW_NEXT = "nav_next_page"
-_ROW_BACK = "nav_back"
+# Special row IDs used for pagination and navigation control
+_ROW_NEXT      = "nav_next_page"
+_ROW_BACK      = "nav_back"
+_ROW_BACK_MAIN = "nav_back_main"  # 4.1: back to main menu button
+
+# 4.1: Reserve 2 rows for navigation (Back to Menu + Next/Prev)
+# WhatsApp list limit = 10 rows. We cap page_items at 8 to always fit nav rows.
+_MAX_ITEM_ROWS = 8
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -88,7 +94,7 @@ async def send_products_menu(adapter, phone: str, db: AsyncSession, page: int = 
             await send_main_menu(adapter, phone)
             return
 
-        page_size = min(settings.menu_page_size, 10)
+        page_size = min(settings.menu_page_size, _MAX_ITEM_ROWS)
         offset = page * page_size
         page_items = products[offset: offset + page_size]
         has_next = (offset + page_size) < len(products)
@@ -105,7 +111,11 @@ async def send_products_menu(adapter, phone: str, db: AsyncSession, page: int = 
             list_rows.append({"id": row_id, "title": product.name, "description": description})
             mapping[row_id] = str(product.id)
 
-        # Add pagination controls
+        # 4.1: Always show Back to Menu as first navigation row
+        list_rows.append({"id": _ROW_BACK_MAIN, "title": "⬅️ Back to Menu", "description": ""})
+        mapping[_ROW_BACK_MAIN] = "back_main"
+
+        # Pagination controls (prev / next) after Back button
         if has_prev:
             list_rows.append({"id": _ROW_BACK, "title": "◀ Previous Page", "description": ""})
             mapping[_ROW_BACK] = f"products_page_{page - 1}"
@@ -153,7 +163,7 @@ async def send_offers_menu(adapter, phone: str, db: AsyncSession, page: int = 0)
             await send_main_menu(adapter, phone)
             return
 
-        page_size = min(settings.menu_page_size, 10)
+        page_size = min(settings.menu_page_size, _MAX_ITEM_ROWS)
         offset = page * page_size
         page_items = offers[offset: offset + page_size]
         has_next = (offset + page_size) < len(offers)
@@ -167,6 +177,10 @@ async def send_offers_menu(adapter, phone: str, db: AsyncSession, page: int = 0)
             description = offer.description[:60] if offer.description else "Tap to learn more"
             list_rows.append({"id": row_id, "title": offer.title, "description": description})
             mapping[row_id] = str(offer.id)
+
+        # 4.1: Always show Back to Menu
+        list_rows.append({"id": _ROW_BACK_MAIN, "title": "⬅️ Back to Menu", "description": ""})
+        mapping[_ROW_BACK_MAIN] = "back_main"
 
         if has_prev:
             list_rows.append({"id": _ROW_BACK, "title": "◀ Previous Page", "description": ""})
@@ -201,6 +215,7 @@ async def handle_menu_input(
     button_payload: str,
     list_id: str,
     db: AsyncSession,
+    client_id: str,
 ) -> bool:
     """
     Route an inbound message through the menu state machine.
@@ -220,7 +235,14 @@ async def handle_menu_input(
         f"trigger={trigger!r} msg={msg[:40]!r}"
     )
 
-    # ── Main menu button taps ─────────────────────────────────────────────────
+    # ── Main menu button taps ───────────────────────────────────────────────────────────────────────────────
+    # 4.1: Handle back-to-main from any submenu first
+    if trigger == _ROW_BACK_MAIN or trigger == "nav_back_main":
+        await clear_menu_state(phone)
+        await send_main_menu(adapter, phone)
+        logger.info(f"[MENU] {phone} navigated back to main menu")
+        return True
+
     if trigger == "products" or (menu_state == MENU_STATE_MAIN and msg.strip() == "1"):
         await send_products_menu(adapter, phone, db, page=0)
         return True
@@ -256,16 +278,36 @@ async def handle_menu_input(
 
         # Real product / offer selected — look up the item, build a RAG query
         if menu_state == MENU_STATE_PRODUCTS:
-            product_name = await _get_product_name(db, mapped_value)
-            if product_name:
-                # Clear menu so RAG bot can run; re-show menu after (caller's job)
+            product = await _get_product(db, mapped_value)
+            if product:
+                # 2.3: track this product tap for analytics
+                await increment_menu_counter("product", mapped_value)
                 await clear_menu_state(phone)
-                # Inject a targeted query so RAG answers about THIS product
+
+                # 3.2: Send product image card if available
+                if product.image_url:
+                    price_str = f"₹{product.price:,.0f}" if product.price else "Price on request"
+                    caption = f"*{product.name}*\n{price_str}"
+                    if product.description:
+                        caption += f"\n{product.description[:80]}"
+                    try:
+                        await adapter.send_media_message(
+                            phone=phone,
+                            media_url=product.image_url,
+                            media_type="image",
+                            caption=caption,
+                            filename="product_image.jpg",
+                        )
+                        logger.info(f"[MENU] Sent product image for {product.name} to {phone}")
+                    except Exception as img_exc:
+                        logger.warning(f"[MENU] Product image send failed (non-fatal): {img_exc}")
+
+                # Run RAG bot to generate full product explanation
                 from services.rag_bot import run_bot
                 await run_bot(
                     phone=phone,
-                    raw_message=f"Tell me about the product: {product_name}",
-                    client_id=None,
+                    raw_message=f"Tell me about the product: {product.name}",
+                    client_id=client_id,
                     db=db,
                     is_menu_request=True,
                 )
@@ -274,12 +316,14 @@ async def handle_menu_input(
         elif menu_state == MENU_STATE_OFFERS:
             offer_title = await _get_offer_title(db, mapped_value)
             if offer_title:
+                # 2.3: track this offer tap for analytics
+                await increment_menu_counter("offer", mapped_value)
                 await clear_menu_state(phone)
                 from services.rag_bot import run_bot
                 await run_bot(
                     phone=phone,
                     raw_message=f"Tell me about this offer: {offer_title}",
-                    client_id=None,
+                    client_id=client_id,
                     db=db,
                     is_menu_request=True,
                 )
@@ -324,6 +368,18 @@ async def _send_catalogue(adapter, phone: str) -> None:
             ),
         )
     logger.info(f"[MENU] Catalogue sent to {phone}")
+
+
+async def _get_product(db: AsyncSession, product_id: str) -> Optional[Product]:
+    """Return a full Product object by UUID string, or None if not found."""
+    try:
+        result = await db.execute(
+            select(Product).where(Product.id == product_id, Product.is_active == True)
+        )
+        return result.scalar_one_or_none()
+    except Exception as exc:
+        logger.error(f"[MENU] _get_product failed: {exc}")
+        return None
 
 
 async def _get_product_name(db: AsyncSession, product_id: str) -> Optional[str]:

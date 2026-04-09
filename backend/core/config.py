@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
 
+    # ── Error Tracking ───────────────────────────────────────────────────────────
+    sentry_dsn: str = ""
+
     # ── Database ─────────────────────────────────────────────────────────────────
     database_url: str
 
@@ -57,17 +60,20 @@ class Settings(BaseSettings):
     catalogue_filename: str = "Devraj_Traders_Product_Catalogue.pdf"
     timezone: str = "Asia/Kolkata"
 
-    # ── Messaging Providers ──────────────────────────────────────────────────────
-    gupshup_mode: str = "mock"  # "mock" | "real"
-    gupshup_api_key: str = ""
-    gupshup_app_name: str = ""
-    gupshup_sender_number: str = ""
-    gupshup_webhook_secret: str = ""
+    # ── Messaging Provider ───────────────────────────────────────────────────────
+    # "meta"   → Meta App + WhatsApp Business API (primary/production)
+    # "twilio" → Twilio sandbox (secondary/testing)
+    # "mock"   → Local dev — no real messages sent
+    messaging_provider: str = "meta"
 
-    # Messaging provider selector
-    messaging_provider: str = "gupshup"   # "gupshup" | "twilio"
+    # ── Meta WhatsApp Business API ───────────────────────────────────────────────
+    meta_phone_number_id: str = ""         # From Meta developer dashboard
+    meta_access_token: str = ""            # Permanent access token
+    meta_app_secret: str = ""              # App Secret for webhook sig validation
+    meta_webhook_verify_token: str = ""    # Your chosen hub.verify_token string
+    meta_api_version: str = "v19.0"       # Graph API version
 
-    # Twilio
+    # ── Twilio (sandbox fallback — activate via MESSAGING_PROVIDER=twilio) ────────
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_whatsapp_number: str = ""

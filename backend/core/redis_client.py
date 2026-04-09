@@ -12,6 +12,7 @@ _redis: Redis | None = None
 # Onboarding states stored as onboard:{phone}
 ONBOARD_AWAITING_CONSENT  = "awaiting_consent"
 ONBOARD_AWAITING_LANGUAGE = "awaiting_language"
+ONBOARD_AWAITING_NAME     = "awaiting_name"     # 2.6: capture client name after language
 
 # ── Menu states stored as menu:{phone} ────────────────────────────────────────
 MENU_STATE_MAIN     = "menu_main"       # client is at the main menu
@@ -172,3 +173,45 @@ async def cache_content_sid(cache_key: str, sid: str) -> None:
     except Exception:
         pass
 
+
+# ─── Menu interaction counters (for analytics) ────────────────────────────────
+
+async def increment_menu_counter(item_type: str, item_id: str) -> None:
+    """
+    Increment the tap counter for a product or offer.
+    Keys: counter:product:{uuid} / counter:offer:{uuid}
+    TTL: 90 days (rolling window for analytics)
+    """
+    try:
+        key = f"counter:{item_type}:{item_id}"
+        r = get_redis()
+        await r.incr(key)
+        await r.expire(key, 90 * 24 * 3600, xx=True)  # only refresh if already set
+        if await r.ttl(key) < 0:
+            await r.expire(key, 90 * 24 * 3600)
+    except Exception:
+        pass
+
+
+async def get_top_menu_items(item_type: str, n: int = 3) -> list[tuple[str, int]]:
+    """
+    Return top N most-tapped product or offer IDs with their counts.
+    Returns: [(item_id, count), ...] sorted by count desc.
+    Scans keys matching counter:{item_type}:*
+    """
+    try:
+        r = get_redis()
+        pattern = f"counter:{item_type}:*"
+        keys = [key async for key in r.scan_iter(pattern, count=200)]
+        if not keys:
+            return []
+        counts = await r.mget(*keys)
+        pairs = []
+        for key, cnt in zip(keys, counts):
+            if cnt:
+                item_id = key.split(":", 2)[-1]  # strip "counter:product:"
+                pairs.append((item_id, int(cnt)))
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return pairs[:n]
+    except Exception:
+        return []

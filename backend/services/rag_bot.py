@@ -23,7 +23,7 @@ from langgraph.graph import StateGraph, END
 from core.config import settings
 from core.redis_client import increment_rate
 from services.knowledge_service import embed_texts, query_knowledge_base
-from services.gupshup_adapter import get_messaging_adapter
+from services.messaging_adapter import get_messaging_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -737,7 +737,7 @@ _rag_graph = build_rag_graph()
 
 
 def _get_adapter():
-    from services.gupshup_adapter import get_messaging_adapter
+    from services.messaging_adapter import get_messaging_adapter
 
     return get_messaging_adapter()
 

@@ -85,12 +85,13 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
 async def get_eligible_clients(
     db: AsyncSession,
     client_ids: Optional[list[uuid.UUID]] = None,
+    override_cooldown: bool = False,
 ) -> list[Client]:
     """
     Returns clients that are:
     - opted_in = True
     - not soft-deleted
-    - not messaged in the last 24 hours
+    - not messaged in the last cooldown window (skipped when override_cooldown=True)
     """
     q = select(Client).where(
         Client.opted_in == True,
@@ -101,7 +102,8 @@ async def get_eligible_clients(
 
     clients = (await db.execute(q)).scalars().all()
 
-    if not settings.broadcast_cooldown_enabled:
+    # Skip cooldown filter for urgent broadcasts
+    if not settings.broadcast_cooldown_enabled or override_cooldown:
         return list(clients)
 
     # Filter out clients messaged within the cooldown window
@@ -129,10 +131,11 @@ async def create_broadcast(
     scheduled_at: Optional[datetime] = None,
     target_client_ids: Optional[list[uuid.UUID]] = None,
     media_url: Optional[str] = None,
-    media_type: Optional[str] = None,      # 'image' | 'document'
-    media_filename: Optional[str] = None,  # label for document downloads
+    media_type: Optional[str] = None,
+    media_filename: Optional[str] = None,
+    override_cooldown: bool = False,
 ) -> dict:
-    eligible = await get_eligible_clients(db, target_client_ids)
+    eligible = await get_eligible_clients(db, target_client_ids, override_cooldown=override_cooldown)
 
     if not eligible:
         raise HTTPException(

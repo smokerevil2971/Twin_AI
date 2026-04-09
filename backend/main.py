@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from core.config import settings
-from core.middleware import logging_middleware
+from core.middleware import logging_middleware, RequestIDFilter
 from routes.auth import router as auth_router
 from routes.clients import router as clients_router
 from routes.broadcasts import router as broadcasts_router
@@ -21,9 +21,29 @@ from routes.products import router as products_router
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG if settings.app_env == "development" else logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    format="%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s — %(message)s",
 )
+root_logger = logging.getLogger()
+req_filter = RequestIDFilter()
+for handler in root_logger.handlers:
+    handler.addFilter(req_filter)
 logger = logging.getLogger(__name__)
+
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+# ─── Sentry ───────────────────────────────────────────────────────────────────
+if settings.sentry_dsn:
+    logger.info("🔧 Starting Sentry SDK initialization")
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        traces_sample_rate=1.0,
+        profiles_sample_rate=1.0,
+        environment=settings.app_env,
+        integrations=[
+            FastApiIntegration(transaction_style="endpoint"),
+        ],
+    )
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -119,6 +139,17 @@ async def startup_checks():
         )
         sys.exit(1)
 
+    # 4.5: .env Validation on Startup
+    missing_meta = []
+    if not settings.meta_phone_number_id:
+        missing_meta.append("META_PHONE_NUMBER_ID")
+    if not getattr(settings, "meta_access_token", None):
+        missing_meta.append("META_ACCESS_TOKEN")
+    if not settings.meta_webhook_verify_token:
+        missing_meta.append("META_WEBHOOK_VERIFY_TOKEN")
+    if missing_meta:
+        logger.warning(f"⚠️  Missing CRITICAL Meta credentials in .env: {', '.join(missing_meta)}")
+
     # TC-019 — warn if OWNER_PHONE not configured
     if not settings.owner_phone:
         logger.warning(
@@ -133,5 +164,38 @@ async def startup_checks():
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
 async def health():
-    return {"status": "ok", "version": "2.0.0", "env": settings.app_env}
+    # 4.4 Enhanced /health Check
+    from core.database import engine
+    from core.redis_client import get_redis
+    from services.knowledge_service import get_chroma_client
+
+    db_status = "ok"
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "error"
+
+    redis_status = "ok"
+    try:
+        r = get_redis()
+        await r.ping()
+    except Exception:
+        redis_status = "error"
+
+    chroma_status = "ok"
+    try:
+        client = get_chroma_client()
+        client.heartbeat()
+    except Exception:
+        chroma_status = "error"
+
+    return {
+        "status": "ok" if db_status == "ok" and redis_status == "ok" and chroma_status == "ok" else "degraded",
+        "db": db_status,
+        "redis": redis_status,
+        "chroma": chroma_status,
+        "version": "2.0.0",
+        "env": settings.app_env
+    }
 

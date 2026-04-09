@@ -14,10 +14,80 @@ from sqlalchemy import select, update
 from core.celery_app import celery_app
 from core.config import settings
 from core.database import get_async_sessionmaker
-from models.models import Broadcast, BroadcastRecipient, Client
-from services.gupshup_adapter import get_messaging_adapter
+from models.models import Broadcast, BroadcastRecipient, Client, Offer
+from services.messaging_adapter import get_messaging_adapter
 
 logger = logging.getLogger(__name__)
+
+
+# ─── 3.5: Offer Expiry Check ──────────────────────────────────────────────────
+
+@celery_app.task(name="tasks.broadcast_tasks.check_expiring_offers")
+def check_expiring_offers():
+    """
+    Celery Beat task — runs daily at 8 AM IST (2:30 AM UTC).
+    For each offer expiring within the next 24 hours, sends the owner an
+    interactive WhatsApp message with two choices:
+      [ 📢 Broadcast Reminder ] — auto-queues a client broadcast
+      [ ❌ Skip ]               — no action taken
+    No client messages are sent without explicit owner approval.
+    """
+    async def _run():
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import select
+        now = datetime.now(timezone.utc)
+        window_end = now + timedelta(hours=24)
+
+        async with AsyncSessionLocal() as db:
+            expiring = (await db.execute(
+                select(Offer).where(
+                    Offer.is_active == True,
+                    Offer.valid_until >= now,
+                    Offer.valid_until <= window_end,
+                )
+            )).scalars().all()
+
+            if not expiring:
+                logger.info("[EXPIRY] No offers expiring in next 24h")
+                return
+
+            adapter = get_messaging_adapter()
+
+            for offer in expiring:
+                # Count opted-in clients who haven't been messaged recently
+                from core.redis_client import get_redis
+                r = get_redis()
+                # Store pending state so webhook can handle the owner's button tap
+                key = f"expiry_pending:{offer.id}"
+                await r.set(key, str(offer.id), ex=48 * 3600)  # 48h TTL
+
+                expires_str = offer.valid_until.strftime("%d %b at %I:%M %p") if offer.valid_until else "soon"
+                body = (
+                    f"⚠️ *Offer Expiring Tomorrow!*\n\n"
+                    f'*"{offer.title}"* expires on {expires_str}\n\n'
+                    f"Should we send a reminder broadcast to subscribed clients?"
+                )
+                try:
+                    await adapter.send_interactive_message(
+                        phone=settings.owner_phone,
+                        body=body,
+                        buttons=[
+                            {"id": f"broadcast_expiry_{offer.id}", "title": "📢 Broadcast Reminder"},
+                            {"id": f"skip_expiry_{offer.id}",      "title": "❌ Skip"},
+                        ],
+                        use_list=False,
+                    )
+                    logger.info(f"[EXPIRY] Sent expiry alert to owner for offer: {offer.title}")
+                except Exception as e:
+                    logger.error(f"[EXPIRY] Failed to send alert for {offer.title}: {e}")
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
 
 
 @celery_app.task(
@@ -104,7 +174,7 @@ async def _send_broadcast_async(broadcast_id_str: str):
                     .where(BroadcastRecipient.id == recipient.id)
                     .values(
                         status="sent",
-                        gupshup_message_id=result.get("messageId"),
+                        provider_message_id=result.get("messageId"),
                         sent_at=datetime.now(timezone.utc),
                     )
                 )
@@ -228,3 +298,58 @@ async def _send_flagged_digest_async():
         )
         await db.commit()
         logger.info(f"[DIGEST] Marked {len(ids_to_mark)} conversations as alert_sent")
+
+
+# ─── 2.6: Daily New-Client Digest ────────────────────────────────────────────
+
+@celery_app.task(name="tasks.broadcast_tasks.send_new_client_digest")
+def send_new_client_digest():
+    """
+    Celery Beat task — runs nightly at 9 PM IST.
+    Finds all clients who joined in the last 24 hours and sends the owner
+    a digest: how many connected, their names, and their phones.
+    """
+    import asyncio
+
+    async def _run():
+        from core.database import AsyncSessionLocal
+        from models.models import Client
+        from sqlalchemy import select
+        from datetime import timedelta
+
+        async with AsyncSessionLocal() as db:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            new_clients = (await db.execute(
+                select(Client)
+                .where(Client.created_at >= cutoff, Client.is_deleted == False)
+                .order_by(Client.created_at.asc())
+            )).scalars().all()
+
+            if not new_clients:
+                logger.info("[NEW-CLIENT DIGEST] No new clients in last 24 hours — skipping")
+                return
+
+            from services.messaging_adapter import get_messaging_adapter
+            adapter = get_messaging_adapter()
+
+            lines = [f"🆕 *New Clients Today — {len(new_clients)} joined*\n"]
+            for i, c in enumerate(new_clients, 1):
+                # If name == phone, client never completed name capture yet
+                name_display = c.name if c.name != c.phone else "_(not provided)_"
+                opted = "✅ Subscribed" if c.opted_in else "❌ Not subscribed"
+                lines.append(f"{i}. *{name_display}*\n   📱 {c.phone} | {opted}")
+
+            digest_msg = "\n\n".join(lines)
+            try:
+                await adapter.send_message(phone=settings.owner_phone, message=digest_msg)
+                logger.info(f"[NEW-CLIENT DIGEST] Sent digest for {len(new_clients)} new client(s) to owner")
+            except Exception as e:
+                logger.error(f"[NEW-CLIENT DIGEST] Failed to send: {e}")
+
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run())
+    finally:
+        loop.close()

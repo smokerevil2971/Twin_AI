@@ -15,8 +15,19 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 import io
+import os
 
+# Disable ChromaDB telemetry to prevent PostHog crash
+os.environ["CHROMADB_TELEMETRY_ANONYMIZED"] = "False"
 import chromadb
+
+# Monkey patch to prevent PostHog argument mismatch crash in newer posthog package
+try:
+    from chromadb.telemetry.product.posthog import Posthog
+    Posthog.capture = lambda *args, **kwargs: None
+except Exception:
+    pass
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, delete as sa_delete
@@ -141,6 +152,7 @@ def get_chroma_client() -> chromadb.HttpClient:
         _chroma_client = chromadb.HttpClient(
             host=settings.chroma_host,
             port=settings.chroma_port,
+            settings=chromadb.config.Settings(anonymized_telemetry=False),
         )
     return _chroma_client
 

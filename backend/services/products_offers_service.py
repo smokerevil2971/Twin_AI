@@ -45,6 +45,11 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "price(inr)": "price",
     "cost": "price",
     "amount": "price",
+    "image": "image_url",
+    "image_url": "image_url",
+    "image url": "image_url",
+    "photo": "image_url",
+    "picture": "image_url",
     "is_active": "is_active",
     "active": "is_active",
     "status": "is_active",
@@ -233,7 +238,12 @@ async def bulk_import_products(
     """
     imported = 0
     skipped = 0
+    updated = 0
     errors: list[dict] = []
+
+    # Fetch existing active products
+    result = await db.execute(select(Product).where(Product.is_active == True))
+    existing_products = {p.name.lower(): p for p in result.scalars().all()}
 
     for idx, row in enumerate(rows, start=2):  # row 1 = header
         name = str(row.get("name") or "").strip()
@@ -244,18 +254,29 @@ async def bulk_import_products(
 
         price = _parse_float(row.get("price"))
         description = str(row.get("description") or "").strip() or None
+        image_url = str(row.get("image_url") or "").strip() or None
         is_active_raw = row.get("is_active")
         is_active = _parse_bool(is_active_raw) if is_active_raw is not None else True
 
-        product = Product(
-            id=uuid.uuid4(),
-            name=name,
-            description=description,
-            price=price,
-            is_active=is_active,
-        )
-        db.add(product)
-        imported += 1
+        existing = existing_products.get(name.lower())
+        if existing:
+            existing.price = price
+            existing.description = description
+            existing.image_url = image_url
+            existing.is_active = is_active
+            updated += 1
+        else:
+            product = Product(
+                id=uuid.uuid4(),
+                name=name,
+                description=description,
+                price=price,
+                image_url=image_url,
+                is_active=is_active,
+            )
+            db.add(product)
+            existing_products[name.lower()] = product
+            imported += 1
 
     try:
         await db.commit()
@@ -264,8 +285,8 @@ async def bulk_import_products(
         logger.error(f"[BULK] Product import commit failed: {exc}")
         raise
 
-    logger.info(f"[BULK] Products imported={imported} skipped={skipped}")
-    return {"imported": imported, "skipped": skipped, "errors": errors}
+    logger.info(f"[BULK] Products imported={imported} updated={updated} skipped={skipped}")
+    return {"imported": imported, "updated": updated, "skipped": skipped, "errors": errors}
 
 
 async def bulk_import_offers(
@@ -278,7 +299,12 @@ async def bulk_import_offers(
     """
     imported = 0
     skipped = 0
+    updated = 0
     errors: list[dict] = []
+
+    # Fetch existing active offers
+    result = await db.execute(select(Offer).where(Offer.is_active == True))
+    existing_offers = {o.title.lower(): o for o in result.scalars().all()}
 
     for idx, row in enumerate(rows, start=2):
         title = str(row.get("title") or "").strip()
@@ -293,16 +319,25 @@ async def bulk_import_offers(
         is_active_raw = row.get("is_active")
         is_active = _parse_bool(is_active_raw) if is_active_raw is not None else True
 
-        offer = Offer(
-            id=uuid.uuid4(),
-            title=title,
-            description=description,
-            valid_from=valid_from,
-            valid_until=valid_until,
-            is_active=is_active,
-        )
-        db.add(offer)
-        imported += 1
+        existing = existing_offers.get(title.lower())
+        if existing:
+            existing.description = description
+            existing.valid_from = valid_from
+            existing.valid_until = valid_until
+            existing.is_active = is_active
+            updated += 1
+        else:
+            offer = Offer(
+                id=uuid.uuid4(),
+                title=title,
+                description=description,
+                valid_from=valid_from,
+                valid_until=valid_until,
+                is_active=is_active,
+            )
+            db.add(offer)
+            existing_offers[title.lower()] = offer
+            imported += 1
 
     try:
         await db.commit()
@@ -311,8 +346,8 @@ async def bulk_import_offers(
         logger.error(f"[BULK] Offer import commit failed: {exc}")
         raise
 
-    logger.info(f"[BULK] Offers imported={imported} skipped={skipped}")
-    return {"imported": imported, "skipped": skipped, "errors": errors}
+    logger.info(f"[BULK] Offers imported={imported} updated={updated} skipped={skipped}")
+    return {"imported": imported, "updated": updated, "skipped": skipped, "errors": errors}
 
 
 # ─── Public: List ────────────────────────────────────────────────────────────
