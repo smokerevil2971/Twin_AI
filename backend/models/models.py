@@ -83,6 +83,12 @@ class BroadcastRecipient(Base):
     __table_args__ = (
         Index("ix_broadcast_recipients_broadcast_id", "broadcast_id"),
         Index("ix_broadcast_recipients_client_id", "client_id"),
+        # MED-04 fix: Composite index for the most common query pattern:
+        # WHERE broadcast_id = X AND status IN ('pending', 'sent').
+        # Without this, status filtering requires a full scan of the broadcast_id index.
+        Index("ix_br_broadcast_status", "broadcast_id", "status"),
+        # Fast lookup by delivery tracking ID from webhook callbacks
+        Index("ix_br_provider_message_id", "provider_message_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -105,6 +111,11 @@ class Conversation(Base):
     __table_args__ = (
         Index("ix_conversations_client_id", "client_id"),
         Index("ix_conversations_flagged", "flagged"),
+        # MED-04 fix: Analytics queries filter by created_at >= cutoff (e.g. last 7/30 days).
+        # Without this index Postgres does a full table scan over all conversations.
+        Index("ix_conversations_created_at", "created_at"),
+        # Fast lookup for unalerted flagged items in flagged digest task
+        Index("ix_conversations_flagged_alert", "flagged", "alert_sent"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -142,6 +153,11 @@ class KnowledgeBase(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        # MED-04 fix: Product menu queries always filter WHERE is_active = TRUE.
+        # Without an index this is a full table scan on every menu load.
+        Index("ix_products_is_active", "is_active"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -156,6 +172,12 @@ class Product(Base):
 
 class Offer(Base):
     __tablename__ = "offers"
+    __table_args__ = (
+        # MED-04 fix: Offer menu queries always filter WHERE is_active = TRUE.
+        # Expiry check task also filters by valid_until range — index helps both.
+        Index("ix_offers_is_active", "is_active"),
+        Index("ix_offers_valid_until", "valid_until"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(255), nullable=False)

@@ -57,6 +57,30 @@ BLOCKED_TOPICS = [
     "bitcoin",
 ]
 
+# ─── Prompt injection detection patterns (Layer 2b) ───────────────────────────
+# Compiled once at module load for performance.
+
+_INJECTION_PATTERNS_RAW = [
+    r"ignore (previous|above|all) instructions",
+    r"you are now",
+    r"pretend (you are|to be)",
+    r"act as (a |an )?(?!customer)",
+    r"forget (everything|your instructions|all)",
+    r"system prompt",
+    r"new persona",
+    r"disregard (your|all|previous)",
+    r"developer mode",
+    r"DAN mode",
+    r"do anything now",
+    r"bypass (your |all )?(restrictions|guidelines|filters)",
+    r"reveal (your|the) (system|instructions|prompt)",
+    r"override (your|all) (instructions|programming)",
+]
+
+INJECTION_RE = re.compile(
+    "|".join(_INJECTION_PATTERNS_RAW), flags=re.IGNORECASE
+)
+
 # ─── Hindi Unicode range ──────────────────────────────────────────────────────
 HINDI_RE = re.compile(r"[\u0900-\u097F]")
 
@@ -129,6 +153,10 @@ class BotState(TypedDict):
     done: bool
     enquiry_intent: bool
     is_menu_request: bool  # NEW — bypass confidence flags
+    # LOW-06 fix: context_check_node sets this key but it wasn't declared in
+    # BotState. LangGraph silently ignores undeclared keys in some versions,
+    # and static type checkers would report TypedDict assignment errors.
+    has_image_context: bool
     _db: Any  # AsyncSession — passed through graph, not modified
 
 
@@ -192,12 +220,20 @@ def detect_language_node(state: BotState) -> dict:
 
 
 def injection_guard_node(state: BotState) -> dict:
-    """Reject out-of-scope queries using keyword blocklist."""
+    """Reject out-of-scope queries using keyword blocklist AND injection regex."""
     msg = state["clean_message"].lower()
+
+    # 2a: topic blocklist
     for topic in BLOCKED_TOPICS:
         if topic in msg:
             logger.info(f"[BOT] injection guard → blocked topic: {topic}")
             return {"done": True, "fallback_reason": "injection"}
+
+    # 2b: prompt injection detection
+    if INJECTION_RE.search(msg):
+        logger.warning(f"[BOT] injection guard → prompt attack detected: {msg[:80]!r}")
+        return {"done": True, "fallback_reason": "injection"}
+
     return {}
 
 
@@ -290,13 +326,26 @@ def _embed_gemini(text: str) -> list:
     return result["embedding"]
 
 
-def retrieve_node(state: BotState) -> dict:
-    """Query ChromaDB for top-15 relevant chunks."""
+async def retrieve_node(state: BotState) -> dict:
+    """
+    Query ChromaDB for top-K relevant chunks.
+
+    MED-02 fix: The previous implementation was a plain `def` that called
+    `query_knowledge_base()` (a blocking HTTP call to the ChromaDB service)
+    directly on the async event loop. This stalled ALL concurrent requests
+    for the entire duration of the ChromaDB round-trip (typically 50-300ms).
+
+    Fix: Run the blocking call inside asyncio's default executor (thread pool)
+    so the event loop stays free to handle other in-flight requests.
+    """
     if not state.get("query_embedding"):
         return {"retrieved_chunks": [], "retrieved_distances": []}
-    results = query_knowledge_base(
-        query_embedding=state["query_embedding"],
-        n_results=settings.rag_top_k_results,
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        None,  # use default ThreadPoolExecutor
+        query_knowledge_base,
+        state["query_embedding"],
+        settings.rag_top_k_results,
     )
     return {
         "retrieved_chunks": results["documents"],
@@ -458,6 +507,15 @@ async def generate_node(state: BotState) -> dict:
         else:
             response_text = await loop.run_in_executor(None, _generate_gemini, prompt)
         logger.info(f"[BOT][GENERATE] OK — response {len(response_text)} chars via {provider}")
+
+        # Layer 4: record token usage (best-effort; token count estimated from chars)
+        try:
+            from services.guardrails.ops_guard import record_tokens
+            _approx_tokens = max(1, len(response_text) // 4 + len(prompt) // 4)
+            await record_tokens(state["phone"], _approx_tokens)
+        except Exception as _te:
+            logger.debug(f"[GUARDRAIL][OPS] token record failed: {_te}")
+
         return {"response": response_text}
     except Exception as e:
         logger.error(f"[BOT][GENERATE] FAILED via {provider}: {type(e).__name__}: {e}", exc_info=True)
@@ -579,8 +637,10 @@ async def fallback_node(state: BotState) -> dict:
     if reason == "no_context":
         # Try to answer from general knowledge instead of a static message
         lang_label = "Hindi" if lang == "hi" else "English"
+        # LOW-03 fix: Was hardcoded to "Devraj Traders". Using settings.business_name
+        # ensures the bot identifies itself correctly after any rename in .env.
         prompt = (
-            f"You are a friendly WhatsApp customer service assistant for Devraj Traders.\n"
+            f"You are a friendly WhatsApp customer service assistant for {settings.business_name}.\n"
             f"Answer the customer's question as helpfully as possible based on your general knowledge.\n"
             f"If you don't know the specific answer, invite them to contact us for details.\n"
             f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences.\n"
@@ -607,10 +667,27 @@ async def fallback_node(state: BotState) -> dict:
     msg = FALLBACK_MSGS.get(lang, FALLBACK_MSGS["en"])
     return {"response": msg, "confidence_score": 0.0, "flagged": False}
 
-
 async def output_node(state: BotState) -> dict:
-    """Send response via messaging adapter and log Conversation to Postgres."""
+    """Send response via messaging adapter and log Conversation to Postgres.
+
+    Layer 3 (Output Guard) is applied here: the response is sanitized/truncated
+    before being sent.  Guardrail failures are non-fatal — the original response
+    is used as a safe fallback.
+    """
     response = state.get("response", FALLBACK_MSGS["en"])
+
+    # ── Layer 3: Output Guardrail ─────────────────────────────────────────────
+    try:
+        from services.guardrails.output_guard import check_output
+        out_result = check_output(response, context={"phone": state["phone"]})
+        if out_result.blocked:
+            logger.warning(
+                f"[GUARDRAIL][OUTPUT] Response blocked (reason={out_result.reason}) "
+                f"for {state['phone']} — using fallback"
+            )
+        response = out_result.response
+    except Exception as _oe:
+        logger.warning(f"[GUARDRAIL][OUTPUT] Output guard failed (non-fatal): {_oe}")
 
     logger.info(f"[BOT][OUTPUT] Sending response to {state['phone']} | fallback_reason={state.get('fallback_reason','')} | len={len(response)}")
     logger.debug(f"[BOT][OUTPUT] Response preview: {response[:120]}")
@@ -626,10 +703,14 @@ async def output_node(state: BotState) -> dict:
     except Exception as e:
         logger.error(f"[BOT][OUTPUT] send_message FAILED for {state['phone']}: {type(e).__name__}: {e}", exc_info=True)
 
-    db = state.get("_db")
-    if db:
-        from models.models import Conversation
+    # Always log the conversation in an isolated fresh session so that any
+    # aborted transaction on the caller's shared session doesn't pollute this
+    # INSERT (the root cause of InFailedSQLTransactionError — DB-FIX-001).
+    from core.database import get_db_context as _get_db_context
+    from models.models import Conversation
 
+    async def _log_conversation(fresh_db) -> None:
+        """Write the Conversation row and schedule an embedding task."""
         try:
             conv = Conversation(
                 client_id=uuid.UUID(state["client_id"]) if state.get("client_id") else None,
@@ -641,21 +722,36 @@ async def output_node(state: BotState) -> dict:
                 flagged=state.get("flagged", False),
                 enquiry_intent=state.get("enquiry_intent", False),
             )
-            db.add(conv)
-            await db.commit()
+            fresh_db.add(conv)
+            await fresh_db.commit()
             logger.info(f"[BOT] conversation logged (flagged={conv.flagged})")
 
-            # Async best-effort: compute + store embedding for long-term memory
-            # Runs after commit so the row exists; failures are non-fatal
             if state.get("client_id") and state.get("query_embedding"):
                 try:
                     from services.memory_service import embed_and_save
+                    from core.database import get_db_context as _get_db_context
 
-                    asyncio.create_task(embed_and_save(conv.id, state["raw_message"], db))
+                    _conv_id = conv.id
+                    _raw_msg = state["raw_message"]
+
+                    async def _embed_task():
+                        try:
+                            async with _get_db_context() as fresh_db:
+                                await embed_and_save(_conv_id, _raw_msg, fresh_db)
+                        except Exception as _e:
+                            logger.warning(f"[BOT] embed_and_save background task failed: {_e}")
+
+                    asyncio.create_task(_embed_task())
                 except Exception as e:
                     logger.warning(f"[BOT] embed_and_save task creation failed: {e}")
         except Exception as db_exc:
             logger.error(f"[BOT][OUTPUT] DB logging failed: {type(db_exc).__name__}: {db_exc}", exc_info=True)
+
+    try:
+        async with _get_db_context() as fresh_db:
+            await _log_conversation(fresh_db)
+    except Exception as sess_exc:
+        logger.error(f"[BOT][OUTPUT] Could not open DB session for logging: {sess_exc}", exc_info=True)
 
     return {}
 

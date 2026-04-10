@@ -28,8 +28,13 @@ def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = 
 
 
 def decode_token(token: str) -> dict[str, Any]:
+    # HIGH-06 fix: Hardcode the allowed algorithm set instead of reading from
+    # config. If ALGORITHM were ever misconfigured to "none" in .env, python-jose
+    # would accept unsigned forged tokens. HS256 is the only valid value; HS384/HS512
+    # are allowed as safe upgrades but RS*/ES* and "none" are explicitly excluded.
+    _ALLOWED_ALGORITHMS = ["HS256", "HS384", "HS512"]
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        payload = jwt.decode(token, settings.secret_key, algorithms=_ALLOWED_ALGORITHMS)
         return payload
     except JWTError:
         raise HTTPException(

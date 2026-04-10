@@ -33,6 +33,7 @@ from core.redis_client import (
     ONBOARD_AWAITING_CONSENT, ONBOARD_AWAITING_LANGUAGE, ONBOARD_AWAITING_NAME,
 )
 from services import menu_service
+from services.guardrails.input_guard import check_input
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -42,18 +43,17 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
-# ─── Status map — Gupshup event type → our internal status ───────────────────
-
+# LOW-02 fix: Removed duplicate lowercase keys ("submitted", "delivered", "read",
+# "failed") that shadowed the uppercase versions. All Gupshup status values are
+# now normalised with .upper() before lookup, so only one key per status is needed.
+# The old mixed-case map was confusing and could mask lookup bugs.
 GUPSHUP_STATUS_MAP = {
     "SENT": "sent",
     "DELIVERED": "delivered",
     "READ": "read",
     "FAILED": "failed",
     "ENQUEUED": "sent",
-    "submitted": "sent",
-    "delivered": "delivered",
-    "read": "read",
-    "failed": "failed",
+    "SUBMITTED": "sent",
 }
 
 
@@ -122,8 +122,14 @@ async def _update_recipient_status(
     payload: dict,
     timestamp: int = 0,
 ) -> None:
-    """Shared helper — update BroadcastRecipient status from any provider's delivery receipt."""
-    async for db in get_db():
+    """Shared helper — update BroadcastRecipient status from any provider's delivery receipt.
+
+    CRIT-03 fix: Uses get_db_context() context manager instead of the
+    `async for db in get_db()` anti-pattern. The generator form of get_db()
+    is designed only for FastAPI dependency injection; using it with `async for`
+    outside DI can leak sessions when exceptions are raised mid-loop.
+    """
+    async with get_db_context() as db:
         result = await db.execute(
             select(BroadcastRecipient).where(
                 BroadcastRecipient.provider_message_id == provider_message_id
@@ -215,12 +221,20 @@ async def whatsapp_inbound_webhook(
             # Meta sends JSON via Graph API webhook format
             raw_body = await request.body()
             signature = request.headers.get("X-Hub-Signature-256", "")
-            if signature:
-                adapter = get_messaging_adapter()
-                is_valid = await adapter.verify_webhook_signature(raw_body, signature)
-                if not is_valid:
-                    logger.warning("[META WEBHOOK] Invalid X-Hub-Signature-256 — rejected")
-                    return Response(status_code=200, content="signature_invalid")
+
+            # CRIT-01 fix: Reject requests with a MISSING signature header entirely.
+            # Previously only validated IF the header was present — any attacker who
+            # omitted the header completely would bypass HMAC authentication.
+            # Note: We still return 200 (not 401) to prevent Meta from retrying.
+            if not signature:
+                logger.warning("[META WEBHOOK] Missing X-Hub-Signature-256 header — rejected")
+                return Response(status_code=200, content="unauthorized")
+
+            adapter = get_messaging_adapter()
+            is_valid = await adapter.verify_webhook_signature(raw_body, signature)
+            if not is_valid:
+                logger.warning("[META WEBHOOK] Invalid X-Hub-Signature-256 — rejected")
+                return Response(status_code=200, content="signature_invalid")
 
             body = await request.json()
             # Meta structure: {object: "whatsapp_business_account", entry: [{changes: [{value: {...}}]}]}
@@ -317,6 +331,24 @@ async def whatsapp_inbound_webhook(
 
     logger.info(f"[WA WEBHOOK] from={sender_phone} msg={message_text[:60]} media={bool(media_url)}")
 
+    # ── Layer 1: Input Guardrail ──────────────────────────────────────────────
+    # Only apply to text messages — skip for media-only payloads
+    if message_text and not media_url:
+        try:
+            guard_result = await check_input(sender_phone, message_text)
+            if not guard_result.allowed:
+                logger.info(
+                    f"[GUARDRAIL] Input blocked: phone={sender_phone} reason={guard_result.reason}"
+                )
+                if guard_result.reply_override:
+                    _adapter = get_messaging_adapter()
+                    await _adapter.send_message(
+                        phone=sender_phone, message=guard_result.reply_override
+                    )
+                return Response(status_code=200, content="guardrail_blocked")
+        except Exception as _guard_exc:
+            logger.warning(f"[GUARDRAIL] Input guard failed (non-fatal): {_guard_exc}")
+
     # inbound_msg_id was initialized to "" at top of function and set inside Meta branch
 
     # ── Owner command routing ─────────────────────────────────────────────
@@ -334,9 +366,19 @@ async def whatsapp_inbound_webhook(
                 offer_id_str = button_payload.split("_", 2)[-1]
                 from models.models import Offer
                 from services.broadcast_service import create_broadcast
+
+                # CRIT-04 fix: Parse offer_id_str to uuid.UUID before querying.
+                # The Offer.id column is a UUID type; comparing it against a raw string
+                # causes a DataError (invalid input syntax for type uuid) in asyncpg.
+                try:
+                    offer_uuid = uuid.UUID(offer_id_str)
+                except ValueError:
+                    logger.warning(f"[EXPIRY] Invalid offer UUID in button payload: {offer_id_str!r}")
+                    return Response(status_code=200, content="ok")
+
                 async with AsyncSessionLocal() as _db:
                     offer = (await _db.execute(
-                        select(Offer).where(Offer.id == offer_id_str)
+                        select(Offer).where(Offer.id == offer_uuid)
                     )).scalar_one_or_none()
 
                 if button_payload.startswith("broadcast_expiry_") and offer:
@@ -427,6 +469,9 @@ async def whatsapp_inbound_webhook(
             select(Client).where(Client.phone == sender_phone)
         )
         client = result.scalar_one_or_none()
+        # Snapshot as plain Python str immediately — rollbacks later in this function
+        # expire ORM attributes, causing a synchronous lazy-load → MissingGreenlet crash.
+        client_id: str | None = str(client.id) if client and not client.is_deleted else None
 
         # ── 1.1 First contact — brand new (or returning deleted) client ───
         if client is None or client.is_deleted:
@@ -667,7 +712,8 @@ async def whatsapp_inbound_webhook(
             return Response(status_code=200, content="ok")
 
         # ── 3.4 Explicit Menu & Greetings ────────────────────────
-        import re
+        # LOW-01 fix: `import re` was duplicated here; it is already imported
+        # at module level (line 14). Removed the redundant in-function import.
         # Remove punctuation for cleaner comparison
         cleaned_msg = re.sub(r'[^\w\s]', '', msg_upper).strip()
         basic_greetings = {
@@ -681,8 +727,11 @@ async def whatsapp_inbound_webhook(
             
             if cleaned_msg != "MENU":
                 # Explicit greeting & text if the user said hi
+                # LOW-03 fix: Was hardcoded to "Devraj Traders" — now reads from
+                # settings.business_name so any business name change in .env is
+                # reflected immediately without touching code.
                 greeting_msg = (
-                    f"Hello! Welcome to *Devraj Traders*. 🏢\n\n"
+                    f"Hello! Welcome to *{settings.business_name}*. 🏢\n\n"
                     f"I am your AI assistant, ready to answer your questions and help you with our latest products and offers. 😊"
                 )
                 await adapter.send_message(phone=sender_phone, message=greeting_msg)
@@ -767,20 +816,40 @@ async def whatsapp_inbound_webhook(
             return Response(status_code=200, content="ok")
 
         # ── Menu state machine (Priority 4) ───────────────────────────────────
-        menu_handled = await menu_service.handle_menu_input(
-            adapter=adapter,
-            phone=sender_phone,
-            msg=message_text,
-            button_payload=button_payload,
-            list_id=list_id,
-            db=db,
-            client_id=str(client.id),
-        )
+        try:
+            menu_handled = await menu_service.handle_menu_input(
+                adapter=adapter,
+                phone=sender_phone,
+                msg=message_text,
+                button_payload=button_payload,
+                list_id=list_id,
+                db=db,
+                client_id=client_id or str(client.id),
+            )
+        except Exception as _menu_exc:
+            # Rollback any aborted transaction before continuing, so the session
+            # is usable for the rest of the webhook flow.
+            logger.warning(f"[WA WEBHOOK] menu_service error (recovered): {_menu_exc}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            menu_handled = False
+        else:
+            # Even on success, if menu_service left the transaction in a bad state
+            # (e.g. a caught integrity error internally), roll back to clear it.
+            if db.in_transaction():
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
         if menu_handled:
             return Response(status_code=200, content="ok")
 
         # ── Pass to RAG bot as normal ──────────────────
-        client_id = str(client.id)
+        # client_id was captured as a plain str at line 471 — safe to use after rollbacks
+        if client_id is None:
+            client_id = str(client.id)  # fallback: client was just onboarded
 
         # 1.1: Mark as read (blue ticks) — replaces old "Got your message!" placeholder text
         if inbound_msg_id and app_settings.messaging_provider == "meta":
@@ -795,7 +864,7 @@ async def whatsapp_inbound_webhook(
                 phone=sender_phone,
                 raw_message=message_text,
                 client_id=client_id,
-                db=db,
+                db=None,  # run_bot opens its own fresh session in output_node
             )
             logger.info(f"[WA WEBHOOK] run_bot completed for {sender_phone}")
 

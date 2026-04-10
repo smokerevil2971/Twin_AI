@@ -132,7 +132,7 @@ class Settings(BaseSettings):
 
     # ── Rate Limits ───────────────────────────────────────────────────────────────
     # RAG bot — max messages a single client can send per hour
-    bot_rate_limit_per_hour: int = 20
+    bot_rate_limit_per_hour: int = 200
     # Broadcast — delay between each message send (~80 msg/sec at 0.013)
     broadcast_send_delay_seconds: float = 0.013
     # Broadcast — Celery retry settings
@@ -146,8 +146,8 @@ class Settings(BaseSettings):
     digest_max_items: int = 20
 
     # ── HTTP Timeouts (seconds) ───────────────────────────────────────────────────
-    # Gupshup / Twilio API calls
-    http_timeout_seconds: float = 10.0
+    # Meta / WhatsApp Business API calls (increased from 10 s — Meta can be slow)
+    http_timeout_seconds: float = 30.0
     # NIM/Gemini embedding API
     embed_timeout_seconds: int = 30
     # Media file downloads (images, PDFs, audio from WhatsApp)
@@ -174,6 +174,19 @@ class Settings(BaseSettings):
     media_cache_dir: str = "/tmp/twinai_media"
     # Minimum owner account password length
     min_password_length: int = 8
+
+    # ── Guardrails ────────────────────────────────────────────────────────────────
+    # Layer 1: Input
+    max_message_length: int = 1000          # chars; messages above this are rejected
+    max_messages_per_hour: int = 20         # per-user sliding-window rate limit
+    # Layer 3: Output
+    max_response_length: int = 1500         # chars; LLM responses above this are truncated
+    # Layer 4: Operational / Token budgets
+    daily_token_limit: int = 0              # 0 = unlimited; set e.g. 100000 to cap
+    per_user_daily_token_limit: int = 5000  # per-user cap per calendar day
+    guardrail_alert_threshold: float = 0.8  # fraction of daily_token_limit that triggers alert
+    # Layer 2: Prompt / RAG quality
+    rag_min_similarity_score: float = 0.45  # below this → use fallback, don't guess
 
     @property
     def allowed_origins_list(self) -> list[str]:

@@ -16,6 +16,7 @@ Media strategy: upload-first
   a reusable `media_id`. The media_id is cached in Redis (md5 of source URL,
   25-day TTL — Meta expires media after 30 days) to avoid redundant uploads.
 """
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -360,16 +361,50 @@ class MetaWABAAdapter(MessagingAdapter):
         logger.info(f"[META] Media uploaded successfully: media_id={media_id}")
         return media_id
 
-    # ── Core HTTP helper ─────────────────────────────────────────────────────
+    # ── Core HTTP helper ───────────────────────────────────────────────────────────
 
     async def _post_message(self, payload: dict, phone: str) -> dict:
-        """POST a message payload to the Meta messages endpoint."""
-        async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-            response = await client.post(
-                self.messages_url,
-                json=payload,
-                headers=self._headers,
-            )
+        """
+        POST a message payload to the Meta messages endpoint.
+
+        Uses a granular timeout:  connect=10 s, read=30 s  (Meta can be slow).
+        Retries up to 3 times on transient ReadTimeout / ConnectTimeout with
+        1-second exponential back-off to survive occasional Meta API hiccups
+        without crashing the webhook handler.
+        """
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=settings.http_timeout_seconds,  # 30 s default
+            write=10.0,
+            pool=10.0,
+        )
+        max_attempts = 3
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        self.messages_url,
+                        json=payload,
+                        headers=self._headers,
+                    )
+                break  # success — exit retry loop
+            except (httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
+                last_exc = exc
+                if attempt < max_attempts:
+                    wait = 2 ** (attempt - 1)  # 1 s, 2 s
+                    logger.warning(
+                        f"[META] Timeout on attempt {attempt}/{max_attempts} "
+                        f"sending to {phone} — retrying in {wait}s: {exc}"
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(
+                        f"[META] All {max_attempts} attempts timed out "
+                        f"sending to {phone}: {exc}"
+                    )
+                    raise
 
         if response.status_code not in (200, 201):
             logger.error(

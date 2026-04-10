@@ -43,7 +43,19 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
     """
     lang_label = "Hindi" if client.language == "hi" else "English"
     prompt = (
-        f"You are a WhatsApp sales assistant for Devraj Traders.\n"
+        f"You are a WhatsApp sales assistant for *Devraj Traders*, Kolhapur.\n"
+        f"Devraj Traders is an interior design and building solutions company. "
+        f"They sell: Gyproc gypsum boards & plaster, fiber cement boards, premium "
+        f"planks, PVC panels & ceiling tiles, T-grid false ceiling systems, Gypframe "
+        f"metal framing, and related building/interior products.\n\n"
+        f"STRICT RULES — YOU MUST FOLLOW THESE:\n"
+        f"1. ONLY use information present in the owner's message below. "
+        f"NEVER add, invent, or assume any product names, prices, offers, or details "
+        f"that are NOT explicitly stated in the owner's message.\n"
+        f"2. Do NOT mention LED TVs, home appliances, electronics, or any product "
+        f"outside of interior design / building materials.\n"
+        f"3. If the owner's message is vague (e.g. 'new stock arrived'), keep the "
+        f"personalised message equally vague — do not invent specifics.\n\n"
         f"The business owner wants to send this message to a client:\n"
         f'"{owner_message}"\n\n'
         f"Client profile:\n"
@@ -53,13 +65,14 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
         f"- Address them by name naturally\n"
         f"- Write entirely in {lang_label}\n"
         f"- Keep it friendly, concise, and highly engaging\n"
-        f"- Preserve the owner's core offer/information\n"
+        f"- Preserve ONLY the owner's stated offer/information — add NO new details\n"
         f"- Do NOT add subject lines or formal greetings like 'Dear'\n"
-        f"- FORMATTING: Use WhatsApp formatting (*bold*) to highlight key terms like product names, prices, and special offers.\n"
-        f"- EMOJIS: Include 2-3 relevant emojis strategically to make the message visually appealing.\n"
-        f"- STRUCTURE: Break up the text into short, scannable lines or bullet points instead of one big paragraph.\n"
+        f"- FORMATTING: Use WhatsApp formatting (*bold*) to highlight key terms.\n"
+        f"- EMOJIS: Include 2-3 relevant emojis strategically.\n"
+        f"- STRUCTURE: Use short lines or bullet points, not one big paragraph.\n"
         f"Respond with ONLY the message text, nothing else."
     )
+
     try:
         # AsyncOpenAI: non-blocking HTTP — does not freeze the event loop
         nim_client = AsyncOpenAI(

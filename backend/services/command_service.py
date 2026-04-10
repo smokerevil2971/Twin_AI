@@ -48,6 +48,23 @@ from tasks.broadcast_tasks import send_broadcast
 logger = logging.getLogger(__name__)
 
 
+# ─── Phone normalisation ──────────────────────────────────────────────────────
+
+def _normalise_phone(raw: str) -> str:
+    """
+    Strip all non-digit characters and normalise to E.164 (+91XXXXXXXXXX).
+    Handles inputs like: '84321 26997', '+918432126997', '918432126997'.
+    Returns the canonical '+91...' form.
+    """
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10:
+        return f"+91{digits}"
+    if digits.startswith("91") and len(digits) == 12:
+        return f"+{digits}"
+    # Already has country code or unknown format — prefix + if missing
+    return f"+{digits}" if not raw.strip().startswith("+") else raw.strip()
+
+
 # ─── MIME type sets ───────────────────────────────────────────────────────────
 
 _CLIENT_SHEET_TYPES = {
@@ -268,9 +285,10 @@ async def dispatch_owner_command(
                 )
                 logger.info(f"[CMD] Scheduled {broadcast_id} for {display_time}")
             except Exception as exc:
-                logger.error(f"[CMD] Failed to schedule: {exc}")
+                logger.error(f"[CMD] Failed to schedule: {exc}", exc_info=True)
                 try:
-                    await adapter.send_message(phone=sender_phone, message=f"❌ Scheduling failed: {str(exc)[:100]}")
+                    # HIGH-03 fix: Never forward raw exc to WhatsApp — may contain DB URL / API keys
+                    await adapter.send_message(phone=sender_phone, message="❌ Scheduling failed. Check server logs for details.")
                 except Exception:
                     pass
         return Response(status_code=200, content="ok")
@@ -351,9 +369,10 @@ async def dispatch_owner_command(
                     await adapter.send_reaction(sender_phone, message_id, "👍")
                 logger.info(f"[CMD] Media broadcast {broadcast_id} queued for {eligible_count} clients")
             except Exception as exc:
-                logger.error(f"[CMD] Media broadcast failed: {exc}")
+                logger.error(f"[CMD] Media broadcast failed: {exc}", exc_info=True)
                 try:
-                    await adapter.send_message(phone=sender_phone, message=f"❌ Media broadcast failed: {str(exc)[:100]}")
+                    # HIGH-03 fix: Sanitized error — full details in server logs only
+                    await adapter.send_message(phone=sender_phone, message="❌ Media broadcast failed. Check server logs for details.")
                 except Exception:
                     pass
         return Response(status_code=200, content="ok")
@@ -386,9 +405,10 @@ async def dispatch_owner_command(
                     await adapter.send_reaction(sender_phone, message_id, "👍")
                 logger.info(f"[CMD] Queued broadcast {broadcast_id} for {eligible_count} clients")
             except Exception as exc:
-                logger.error(f"[CMD] Failed to create broadcast: {exc}")
+                logger.error(f"[CMD] Failed to create broadcast: {exc}", exc_info=True)
                 try:
-                    await adapter.send_message(phone=sender_phone, message=f"❌ Broadcast failed: {str(exc)[:100]}")
+                    # HIGH-03 fix: Sanitized error — full details in server logs only
+                    await adapter.send_message(phone=sender_phone, message="❌ Broadcast failed. Check server logs for details.")
                 except Exception:
                     pass
         return Response(status_code=200, content="ok")
@@ -397,23 +417,31 @@ async def dispatch_owner_command(
     add_match = re.match(r"(?i)^add:\s*(\+?\d[\d\s\-]{7,15})\s*,\s*(.+)$", msg)
     if add_match:
         raw_phone, name = add_match.group(1).strip(), add_match.group(2).strip()
-        digits = re.sub(r"\D", "", raw_phone)
-        if len(digits) == 10:
-            phone = f"+91{digits}"
-        elif digits.startswith("91") and len(digits) == 12:
-            phone = f"+{digits}"
-        else:
-            phone = f"+{digits}" if not raw_phone.startswith("+") else raw_phone
+        phone = _normalise_phone(raw_phone)
         try:
             async with AsyncSessionLocal() as db:
+                # Query regardless of is_deleted — inserting when a soft-deleted row
+                # exists crashes on uq_client_phone (IntegrityError fix).
                 existing = (await db.execute(
-                    select(Client).where(Client.phone == phone, Client.is_deleted == False)
+                    select(Client).where(Client.phone == phone)
                 )).scalar_one_or_none()
-                if existing:
+
+                if existing and not existing.is_deleted:
                     await adapter.send_message(
                         phone=sender_phone,
                         message=f"⚠️ Client already exists:\n👤 {existing.name} ({phone})",
                     )
+                elif existing and existing.is_deleted:
+                    # Reactivate soft-deleted client instead of inserting
+                    existing.is_deleted = False
+                    existing.opted_in = True
+                    existing.name = name
+                    await db.commit()
+                    await adapter.send_message(
+                        phone=sender_phone,
+                        message=f"✅ Client re-activated & opted-in:\n👤 *{name}*\n📞 {phone}",
+                    )
+                    logger.info(f"[CMD] Re-activated client: {name} ({phone})")
                 else:
                     client = Client(name=name, phone=phone, opted_in=True)
                     db.add(client)
@@ -424,25 +452,26 @@ async def dispatch_owner_command(
                     )
                     logger.info(f"[CMD] Added client: {name} ({phone})")
         except Exception as exc:
-            logger.error(f"[CMD] ADD: failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add client: {str(exc)[:120]}")
+            logger.error(f"[CMD] ADD: failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to add client. Check server logs for details.")
         return Response(status_code=200, content="ok")
+
 
     # ── REMOVE: <phone> ───────────────────────────────────────────────────────
     remove_match = re.match(r"(?i)^remove:\s*(\+?\d[\d\s\-]{7,15})$", msg)
     if remove_match:
         raw_phone = remove_match.group(1).strip()
-        digits = re.sub(r"\D", "", raw_phone)
-        if len(digits) == 10:
-            phone = f"+91{digits}"
-        elif digits.startswith("91") and len(digits) == 12:
-            phone = f"+{digits}"
-        else:
-            phone = f"+{digits}" if not raw_phone.startswith("+") else raw_phone
+        phone = _normalise_phone(raw_phone)
+        # Also try without '+' for rows imported before normalisation was enforced
+        phone_no_plus = phone.lstrip("+")
         try:
             async with AsyncSessionLocal() as db:
                 client = (await db.execute(
-                    select(Client).where(Client.phone == phone, Client.is_deleted == False)
+                    select(Client).where(
+                        Client.phone.in_([phone, phone_no_plus]),
+                        Client.is_deleted == False,
+                    )
                 )).scalar_one_or_none()
                 if not client:
                     await adapter.send_message(
@@ -460,8 +489,9 @@ async def dispatch_owner_command(
                     )
                     logger.info(f"[CMD] Removed client: {client_name} ({phone})")
         except Exception as exc:
-            logger.error(f"[CMD] REMOVE: failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove client: {str(exc)[:120]}")
+            logger.error(f"[CMD] REMOVE: failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to remove client. Check server logs for details.")
         return Response(status_code=200, content="ok")
 
     # ── Owner sends CSV/XLSX → bulk import based on caption ───────────────────
@@ -539,9 +569,10 @@ async def dispatch_owner_command(
             await adapter.send_message(phone=sender_phone, message=response_msg)
             logger.info(f"[CMD] {target.capitalize()} import: {imported} imported, {skipped} skipped")
         except Exception as exc:
-            logger.error(f"[CMD] {target.capitalize()} import failed: {exc}")
+            logger.error(f"[CMD] {target.capitalize()} import failed: {exc}", exc_info=True)
             try:
-                await adapter.send_message(phone=sender_phone, message=f"❌ Import failed: {str(exc)[:150]}")
+                # HIGH-03 fix: Sanitized error — full details in server logs only
+                await adapter.send_message(phone=sender_phone, message=f"❌ {target.capitalize()} import failed. Check server logs for details.")
             except Exception:
                 pass
         return Response(status_code=200, content="ok")
@@ -605,11 +636,12 @@ async def dispatch_owner_command(
             )
             logger.info(f"[CMD] KB ingestion complete: {filename}, {chunks} chunks, category={category}")
         except Exception as exc:
-            logger.error(f"[CMD] KB ingestion failed: {exc}")
+            logger.error(f"[CMD] KB ingestion failed: {exc}", exc_info=True)
             try:
+                # HIGH-03 fix: Sanitized error — full details in server logs only
                 await adapter.send_message(
                     phone=sender_phone,
-                    message=f"❌ Failed to ingest document: {str(exc)[:150]}",
+                    message="❌ Failed to ingest document. Check server logs for details.",
                 )
             except Exception:
                 pass
@@ -707,8 +739,9 @@ async def dispatch_owner_command(
                         await adapter.send_reaction(sender_phone, message_id, "👍")
                     logger.info(f"[CMD] Product added: {name} @ {price} image={'yes' if image_url else 'no'}")
         except Exception as exc:
-            logger.error(f"[CMD] PRODUCT add failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add product: {str(exc)[:120]}")
+            logger.error(f"[CMD] PRODUCT add failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to add product. Check server logs for details.")
         return Response(status_code=200, content="ok")
 
     # ── OFFER: <title> | <description> ───────────────────────────────────────
@@ -744,8 +777,9 @@ async def dispatch_owner_command(
                     )
                     logger.info(f"[CMD] Offer added: {title}")
         except Exception as exc:
-            logger.error(f"[CMD] OFFER add failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to add offer: {str(exc)[:120]}")
+            logger.error(f"[CMD] OFFER add failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to add offer. Check server logs for details.")
         return Response(status_code=200, content="ok")
 
     # ── DEL PRODUCT: <name> ───────────────────────────────────────────────────
@@ -771,8 +805,9 @@ async def dispatch_owner_command(
                     )
                     logger.info(f"[CMD] Product deactivated: {product.name}")
         except Exception as exc:
-            logger.error(f"[CMD] DEL PRODUCT failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove product: {str(exc)[:120]}")
+            logger.error(f"[CMD] DEL PRODUCT failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to remove product. Check server logs for details.")
         return Response(status_code=200, content="ok")
 
     # ── DEL OFFER: <title> ────────────────────────────────────────────────────
@@ -798,8 +833,9 @@ async def dispatch_owner_command(
                     )
                     logger.info(f"[CMD] Offer deactivated: {offer.title}")
         except Exception as exc:
-            logger.error(f"[CMD] DEL OFFER failed: {exc}")
-            await adapter.send_message(phone=sender_phone, message=f"❌ Failed to remove offer: {str(exc)[:120]}")
+            logger.error(f"[CMD] DEL OFFER failed: {exc}", exc_info=True)
+            # HIGH-03 fix: Sanitized error — full details in server logs only
+            await adapter.send_message(phone=sender_phone, message="❌ Failed to remove offer. Check server logs for details.")
         return Response(status_code=200, content="ok")
 
     # ── /broadcasts — list recent broadcasts ─────────────────────────────────
@@ -882,18 +918,38 @@ async def dispatch_owner_command(
             broadcasts_cnt = (await db.execute(select(func.count(Broadcast.id)).where(Broadcast.status == "sent", Broadcast.created_at >= cutoff))).scalar_one()
 
             # Best broadcast by read rate
+            # MED-01 fix: Previously fetched per-broadcast recipient stats in a for-loop
+            # (1 query per broadcast = N+1). For a 30-day window with 30 broadcasts that
+            # was 30 extra round-trips. Now: single GROUP BY (broadcast_id, status) query.
             best_bc_name = "N/A"
             bc_rows = (await db.execute(
                 select(Broadcast).where(Broadcast.status == "sent", Broadcast.created_at >= cutoff)
             )).scalars().all()
             if bc_rows:
-                best_bc, best_rate = None, -1
+                bc_ids = [bc.id for bc in bc_rows]
+                # One query returns all status counts for all broadcasts at once
+                all_stats_rows = (await db.execute(
+                    select(
+                        BroadcastRecipient.broadcast_id,
+                        BroadcastRecipient.status,
+                        func.count().label("cnt"),
+                    )
+                    .where(BroadcastRecipient.broadcast_id.in_(bc_ids))
+                    .group_by(BroadcastRecipient.broadcast_id, BroadcastRecipient.status)
+                )).all()
+                # Build lookup: {broadcast_id: {status: count}}
+                stats_map: dict = {}
+                for row in all_stats_rows:
+                    bid = row.broadcast_id
+                    if bid not in stats_map:
+                        stats_map[bid] = {}
+                    stats_map[bid][row.status] = row.cnt
+
+                best_bc, best_rate = None, -1.0
                 for bc in bc_rows:
-                    stats = dict((await db.execute(
-                        select(BroadcastRecipient.status, func.count()).where(BroadcastRecipient.broadcast_id == bc.id).group_by(BroadcastRecipient.status)
-                    )).all())
-                    total_s = sum(stats.values())
-                    read_r = (stats.get("read", 0) / total_s * 100) if total_s else 0
+                    s = stats_map.get(bc.id, {})
+                    total_s = sum(s.values())
+                    read_r = (s.get("read", 0) / total_s * 100) if total_s else 0.0
                     if read_r > best_rate:
                         best_rate, best_bc = read_r, bc
                 if best_bc:

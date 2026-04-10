@@ -54,12 +54,16 @@ app = FastAPI(
 )
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
+# HIGH-05 fix: Restrict to explicit method and header allowlists.
+# Using allow_methods=["*"] + allow_headers=["*"] with allow_credentials=True
+# allows any origin (if misconfigured) to make credentialed requests with any
+# HTTP verb — including DELETE on admin endpoints.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Accept"],
 )
 
 # ─── Request Logging ──────────────────────────────────────────────────────────
@@ -149,6 +153,17 @@ async def startup_checks():
         missing_meta.append("META_WEBHOOK_VERIFY_TOKEN")
     if missing_meta:
         logger.warning(f"⚠️  Missing CRITICAL Meta credentials in .env: {', '.join(missing_meta)}")
+
+    # HIGH-02 fix: Loudly flag when META_APP_SECRET is unset.
+    # Without it, meta_waba_adapter.verify_webhook_signature() always returns True,
+    # meaning ANY request to POST /webhooks/whatsapp is accepted without HMAC validation.
+    # Combined with CRIT-01 (now fixed), this was a complete authentication bypass.
+    if settings.messaging_provider == "meta" and not settings.meta_app_secret:
+        logger.critical(
+            "❌ SECURITY: META_APP_SECRET is not set in .env. "
+            "Webhook HMAC signature validation is DISABLED — anyone can send fake "
+            "WhatsApp messages to your bot. Set META_APP_SECRET immediately!"
+        )
 
     # TC-019 — warn if OWNER_PHONE not configured
     if not settings.owner_phone:

@@ -33,8 +33,16 @@ def check_expiring_offers():
     No client messages are sent without explicit owner approval.
     """
     async def _run():
-        from core.database import AsyncSessionLocal
         from sqlalchemy import select
+        # LOW-04 fix: `from core.database import AsyncSessionLocal` imports the
+        # module-level session factory which is bound to the main process event loop.
+        # Celery tasks run in a DIFFERENT event loop (via asyncio.new_event_loop()),
+        # so using the main engine here raises: "Future attached to different loop".
+        # get_async_sessionmaker() creates a fresh SQLAlchemy async engine + session
+        # factory that is safe to use in any event loop.
+        from core.database import get_async_sessionmaker
+        AsyncSessionLocal = get_async_sessionmaker()
+
         now = datetime.now(timezone.utc)
         window_end = now + timedelta(hours=24)
 
@@ -152,7 +160,13 @@ async def _send_broadcast_async(broadcast_id_str: str):
         sent = 0
         failed = 0
 
-        for recipient, phone in rows:
+        # MED-03 fix: Previously committed after every single recipient (1 DB round-trip
+        # per send). For a 500-recipient broadcast that was 500 commits — each one is a
+        # synchronous Postgres round-trip adding ~2-5 ms, totalling 1-2.5 seconds of
+        # pure DB overhead. Now we batch commits every 50 recipients.
+        COMMIT_BATCH_SIZE = 50
+
+        for i, (recipient, phone) in enumerate(rows):
             try:
                 if media_url and media_type:
                     # Media broadcast — send image or document with caption
@@ -194,9 +208,15 @@ async def _send_broadcast_async(broadcast_id_str: str):
                 )
                 failed += 1
 
-            await db.commit()
+            # Batch commit every N recipients instead of every single one
+            if (i + 1) % COMMIT_BATCH_SIZE == 0:
+                await db.commit()
+
             # Rate limiting — pause between sends
             await asyncio.sleep(settings.broadcast_send_delay_seconds)
+
+        # Final flush for the remaining partial batch
+        await db.commit()
 
         # Mark broadcast as sent (or failed if all failed)
         final_status = "sent" if sent > 0 else "failed"
@@ -309,13 +329,17 @@ def send_new_client_digest():
     Finds all clients who joined in the last 24 hours and sends the owner
     a digest: how many connected, their names, and their phones.
     """
-    import asyncio
-
+    # LOW-05 fix: `import asyncio` was duplicated — once inside `_run()` and again
+    # at the bottom of the task body. `asyncio` is already imported at the module
+    # top (line 8), so both in-function imports are redundant.
     async def _run():
-        from core.database import AsyncSessionLocal
+        from core.database import get_async_sessionmaker
         from models.models import Client
         from sqlalchemy import select
         from datetime import timedelta
+
+        # LOW-04 fix: Use get_async_sessionmaker() for Celery task safety
+        AsyncSessionLocal = get_async_sessionmaker()
 
         async with AsyncSessionLocal() as db:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -346,7 +370,6 @@ def send_new_client_digest():
             except Exception as e:
                 logger.error(f"[NEW-CLIENT DIGEST] Failed to send: {e}")
 
-    import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

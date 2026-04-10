@@ -7,7 +7,7 @@ Auth routes — Two-Bot version
   POST /auth/change-password — update password
 """
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -74,20 +74,62 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
 # ─── POST /auth/login ─────────────────────────────────────────────────────────
 
 @router.post("/login")
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     """
     TC-003 fix: Returns the same generic 401 whether the owner account
-    doesn't exist OR the password is wrong — prevents email enumeration
-    (an attacker could previously distinguish the two cases via the 404).
+    doesn't exist OR the password is wrong — prevents email enumeration.
+
+    HIGH-01 fix: Redis-backed rate limiting — max 5 failed attempts per
+    client IP per 15-minute window. Counter is cleared on successful login
+    so legitimate owners are never locked out permanently.
     """
-    result = await db.execute(select(Owner))
+    # ── Rate limiting (HIGH-01) ─────────────────────────────────────────────────
+    from core.redis_client import get_redis
+    _MAX_ATTEMPTS = 5          # failed attempts before lockout
+    _WINDOW_SECONDS = 15 * 60  # 15-minute sliding window
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"login_attempts:{client_ip}"
+    try:
+        r = get_redis()
+        attempts = await r.get(rate_key)
+        if attempts and int(attempts) >= _MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many login attempts. Try again in {_WINDOW_SECONDS // 60} minutes.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Degrade gracefully if Redis is unavailable — never hard-block login
+
+    # ── Credential check ──────────────────────────────────────────────────────
+    # LOW-07 fix: The email from request body was never checked against the
+    # database — any email string with the correct password would log in.
+    # While there's only one owner row, this is semantically wrong and would
+    # silently succeed for `{"email": "anything@example.com", "password": "correct"}`.
+    result = await db.execute(select(Owner).where(Owner.email == body.email))
     owner = result.scalar_one_or_none()
 
     if not owner or not verify_password(body.password, owner.password_hash):
+        # Increment failure counter; set TTL only on first failure
+        try:
+            r = get_redis()
+            new_count = await r.incr(rate_key)
+            if new_count == 1:
+                await r.expire(rate_key, _WINDOW_SECONDS)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
+    # Success — clear failure counter so owner is never permanently locked out
+    try:
+        r = get_redis()
+        await r.delete(rate_key)
+    except Exception:
+        pass
 
     token = create_access_token({
         "sub": str(owner.id),

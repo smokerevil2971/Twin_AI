@@ -243,7 +243,11 @@ def _embed_texts_nim(texts: list[str]) -> list[list[float]]:
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         payload = {
-            "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
+            # MED-05 fix: Was hardcoded to "nvidia/llama-3.2-nemoretriever-300m-embed-v1".
+            # If EMBEDDING_MODEL is changed in .env for the RAG query path but not here,
+            # ingestion uses a different-dimension model → ChromaDB rejects vectors at
+            # query time with "dimension mismatch" errors.
+            "model": settings.embedding_model,
             "input": batch,
             "input_type": "passage",
             "encoding_format": "float",
@@ -344,6 +348,21 @@ async def ingest_document(
     # Store in ChromaDB
     collection = get_chroma_collection()
     doc_id = uuid.uuid4()
+
+    # ── Layer 5: Privacy Guardrail — redact PII before storing ────────────────
+    try:
+        from services.guardrails.privacy_guard import scan_and_redact
+        cleaned_chunks = [scan_and_redact(chunk) for chunk in chunks]
+        pii_count = sum(1 for orig, clean in zip(chunks, cleaned_chunks) if orig != clean)
+        if pii_count:
+            logger.warning(
+                f"[GUARDRAIL][PRIVACY] Redacted PII in {pii_count}/{len(chunks)} "
+                f"chunks of '{filename}' before ChromaDB ingestion"
+            )
+        chunks = cleaned_chunks
+    except Exception as _pe:
+        logger.warning(f"[GUARDRAIL][PRIVACY] PII scan failed (non-fatal): {_pe}")
+
     chroma_ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
     metadata_list = [
         {

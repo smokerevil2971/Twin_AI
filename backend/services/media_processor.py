@@ -7,6 +7,7 @@ Provider switch: set LLM_PROVIDER=nim or LLM_PROVIDER=gemini in .env
 - NIM  → microsoft/phi-4-multimodal-instruct (images + audio)
 - Gemini → gemini-2.0-flash  (images + audio)
 """
+import asyncio
 import base64
 import logging
 import httpx
@@ -141,8 +142,10 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
         mime_base = content_type.split(";")[0].strip()
 
         caption_hint = f' The client added this caption: "{caption}".' if caption else ""
+        # LOW-03 fix: Was hardcoded to "Devraj Traders". Now reads from
+        # settings.business_name so vision context is correct after any rename.
         prompt = (
-            "You are an expert product assistant for Devraj Traders. "
+            f"You are an expert product assistant for {settings.business_name}. "
             "The client has sent an image via WhatsApp." + caption_hint + " "
             "Describe what you see in 1-2 sentences and extract any relevant question or context "
             "that would help you answer a question about our products. "
@@ -150,10 +153,15 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
             "If it's a document (invoice, quote), summarize the key figures."
         )
 
+        # MED-07 fix: _vision_nim and _vision_gemini make blocking network calls
+        # (OpenAI SDK / google-generativeai) synchronously. Calling them directly
+        # in this async function stalls the event loop for 1-10 seconds per image.
+        # Fix: run in the default thread-pool executor so the loop stays free.
+        loop = asyncio.get_event_loop()
         if settings.is_nim:
-            description = _vision_nim(prompt, b64, mime_base)
+            description = await loop.run_in_executor(None, _vision_nim, prompt, b64, mime_base)
         else:
-            description = _vision_gemini(prompt, b64, mime_base)
+            description = await loop.run_in_executor(None, _vision_gemini, prompt, b64, mime_base)
 
         description = description.strip()
         logger.info(f"[MEDIA] Image described: {description[:80]}")
@@ -246,10 +254,13 @@ async def _process_audio(media_url: str, content_type: str) -> str:
         elif "mpeg" in mime_base or "mp3" in mime_base:
             mime_base = "audio/mpeg"
 
+        # MED-07 fix: same executor pattern as _process_image — these SDK calls
+        # are blocking and must not run directly on the async event loop.
+        loop = asyncio.get_event_loop()
         if settings.is_nim:
-            transcript = _audio_nim(b64, mime_base)
+            transcript = await loop.run_in_executor(None, _audio_nim, b64, mime_base)
         else:
-            transcript = _audio_gemini(b64, mime_base)
+            transcript = await loop.run_in_executor(None, _audio_gemini, b64, mime_base)
 
         transcript = transcript.strip()
         logger.info(f"[MEDIA] Voice transcribed: {transcript[:80]}")

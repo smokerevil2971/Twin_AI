@@ -181,14 +181,26 @@ async def increment_menu_counter(item_type: str, item_id: str) -> None:
     Increment the tap counter for a product or offer.
     Keys: counter:product:{uuid} / counter:offer:{uuid}
     TTL: 90 days (rolling window for analytics)
+
+    MED-08 fix: The old implementation had a race condition — three non-atomic
+    Redis calls (INCR → EXPIRE xx=True → TTL check → EXPIRE) left a window
+    where two concurrent workers could each try to set the TTL independently,
+    or both skip it (leaving the key with no expiry = memory leak).
+
+    Fix: Use SET NX EX to atomically initialise the key with TTL=90d on the
+    very first tap. Subsequent taps just INCR (TTL is already set).
     """
+    _TTL = 90 * 24 * 3600  # 90 days in seconds
     try:
         key = f"counter:{item_type}:{item_id}"
         r = get_redis()
-        await r.incr(key)
-        await r.expire(key, 90 * 24 * 3600, xx=True)  # only refresh if already set
-        if await r.ttl(key) < 0:
-            await r.expire(key, 90 * 24 * 3600)
+        # Attempt to atomically create the key with value "1" and TTL.
+        # NX means "only set if Not eXists" — if another worker beats us here,
+        # SET NX returns False/None and we fall through to INCR which is safe.
+        created = await r.set(key, 1, nx=True, ex=_TTL)
+        if not created:
+            # Key already existed — just increment (TTL stays intact from creation)
+            await r.incr(key)
     except Exception:
         pass
 
