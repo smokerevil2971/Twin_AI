@@ -244,18 +244,15 @@ async def embed_node(state: BotState) -> dict:
     google-generativeai SDK). We run them in the default thread-pool executor
     so they do NOT block the async event loop.
     """
-    loop = asyncio.get_event_loop()
     provider = "nim" if settings.is_nim else "gemini"
     logger.info(f"[BOT][EMBED] Starting embedding via {provider} for: {state['clean_message'][:60]}")
     try:
         if settings.is_nim:
-            embedding = await loop.run_in_executor(
-                None, _embed_nim, state["clean_message"]
-            )
+            # P1.5 fix: asyncio.get_event_loop() deprecated in Python 3.10+, removed in 3.12.
+            # asyncio.to_thread() is the correct Python 3.9+ replacement.
+            embedding = await asyncio.to_thread(_embed_nim, state["clean_message"])
         else:
-            embedding = await loop.run_in_executor(
-                None, _embed_gemini, state["clean_message"]
-            )
+            embedding = await asyncio.to_thread(_embed_gemini, state["clean_message"])
         logger.info(f"[BOT][EMBED] OK — vector dim={len(embedding)}")
         return {"query_embedding": embedding}
     except Exception as e:
@@ -340,9 +337,8 @@ async def retrieve_node(state: BotState) -> dict:
     """
     if not state.get("query_embedding"):
         return {"retrieved_chunks": [], "retrieved_distances": []}
-    loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(
-        None,  # use default ThreadPoolExecutor
+    # P1.5 fix: replaced deprecated asyncio.get_event_loop().run_in_executor() with asyncio.to_thread()
+    results = await asyncio.to_thread(
         query_knowledge_base,
         state["query_embedding"],
         settings.rag_top_k_results,
@@ -498,14 +494,14 @@ async def generate_node(state: BotState) -> dict:
     else:
         return {"done": True, "fallback_reason": "no_context"}
 
-    loop = asyncio.get_event_loop()
     provider = "nim" if settings.is_nim else "gemini"
     logger.info(f"[BOT][GENERATE] Starting generation via {provider}")
     try:
         if settings.is_nim:
-            response_text = await loop.run_in_executor(None, _generate_nim, prompt)
+            # P1.5 fix: asyncio.to_thread() replaces deprecated get_event_loop().run_in_executor()
+            response_text = await asyncio.to_thread(_generate_nim, prompt)
         else:
-            response_text = await loop.run_in_executor(None, _generate_gemini, prompt)
+            response_text = await asyncio.to_thread(_generate_gemini, prompt)
         logger.info(f"[BOT][GENERATE] OK — response {len(response_text)} chars via {provider}")
 
         # Layer 4: record token usage (best-effort; token count estimated from chars)
@@ -648,12 +644,12 @@ async def fallback_node(state: BotState) -> dict:
             f"Customer question: {state.get('clean_message', '')}\n\n"
             f"Answer:"
         )
-        loop = asyncio.get_event_loop()
+        # P1.5 fix: asyncio.to_thread() replaces deprecated get_event_loop().run_in_executor()
         try:
             if settings.is_nim:
-                msg = await loop.run_in_executor(None, _generate_nim, prompt)
+                msg = await asyncio.to_thread(_generate_nim, prompt)
             else:
-                msg = await loop.run_in_executor(None, _generate_gemini, prompt)
+                msg = await asyncio.to_thread(_generate_gemini, prompt)
             if msg:
                 logger.info("[BOT] fallback answered via general knowledge")
                 return {"response": msg, "confidence_score": 0.3, "flagged": True}

@@ -154,14 +154,12 @@ async def _process_image(media_url: str, content_type: str, caption: str) -> str
         )
 
         # MED-07 fix: _vision_nim and _vision_gemini make blocking network calls
-        # (OpenAI SDK / google-generativeai) synchronously. Calling them directly
-        # in this async function stalls the event loop for 1-10 seconds per image.
-        # Fix: run in the default thread-pool executor so the loop stays free.
-        loop = asyncio.get_event_loop()
+        # (OpenAI SDK / google-generativeai) synchronously. Run in thread pool so the loop stays free.
+        # P1.5 fix: replaced deprecated asyncio.get_event_loop().run_in_executor() with asyncio.to_thread()
         if settings.is_nim:
-            description = await loop.run_in_executor(None, _vision_nim, prompt, b64, mime_base)
+            description = await asyncio.to_thread(_vision_nim, prompt, b64, mime_base)
         else:
-            description = await loop.run_in_executor(None, _vision_gemini, prompt, b64, mime_base)
+            description = await asyncio.to_thread(_vision_gemini, prompt, b64, mime_base)
 
         description = description.strip()
         logger.info(f"[MEDIA] Image described: {description[:80]}")
@@ -254,13 +252,12 @@ async def _process_audio(media_url: str, content_type: str) -> str:
         elif "mpeg" in mime_base or "mp3" in mime_base:
             mime_base = "audio/mpeg"
 
-        # MED-07 fix: same executor pattern as _process_image — these SDK calls
-        # are blocking and must not run directly on the async event loop.
-        loop = asyncio.get_event_loop()
+        # MED-07 fix: same thread-pool pattern as _process_image — blocking SDK calls.
+        # P1.5 fix: replaced deprecated asyncio.get_event_loop().run_in_executor() with asyncio.to_thread()
         if settings.is_nim:
-            transcript = await loop.run_in_executor(None, _audio_nim, b64, mime_base)
+            transcript = await asyncio.to_thread(_audio_nim, b64, mime_base)
         else:
-            transcript = await loop.run_in_executor(None, _audio_gemini, b64, mime_base)
+            transcript = await asyncio.to_thread(_audio_gemini, b64, mime_base)
 
         transcript = transcript.strip()
         logger.info(f"[MEDIA] Voice transcribed: {transcript[:80]}")

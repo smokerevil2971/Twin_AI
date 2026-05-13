@@ -129,8 +129,11 @@ class Conversation(Base):
     enquiry_intent: Mapped[bool] = mapped_column(Boolean, default=False)
     alert_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Long-term memory: vector embedding of the user message (768-dim for Gemini, 1024 for NIM)
-    embedding: Mapped[list | None] = mapped_column(Vector(768), nullable=True)
+    # Long-term memory: vector embedding of the user message.
+    # P1.1 fix: NIM nemoretriever-300m-embed-v1 produces 1024-dim vectors.
+    # Gemini embedding-001 produces 768-dim. Column is set to 1024 (NIM).
+    # If switching to Gemini embeddings, update Vector(1024) → Vector(768) AND run alembic migration.
+    embedding: Mapped[list | None] = mapped_column(Vector(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

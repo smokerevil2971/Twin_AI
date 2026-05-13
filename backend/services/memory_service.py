@@ -42,7 +42,7 @@ def _embed_nim(text_input: str) -> list:
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v1",
+        "model": settings.embedding_model,  # P1.2 fix: was hardcoded — must match rag_bot.py and knowledge_service.py
         "input": [text_input],
         "input_type": "passage",
         "encoding_format": "float",
@@ -56,13 +56,15 @@ def _embed_nim(text_input: str) -> list:
 
 
 async def _get_embedding(text_input: str) -> list:
-    """Compute embedding off the event loop (sync SDK calls)."""
-    loop = asyncio.get_event_loop()
+    """Compute embedding off the event loop (sync SDK calls).
+    P1.5 fix: asyncio.get_event_loop() deprecated in Python 3.10+, removed in 3.12.
+    Use asyncio.to_thread() — the correct Python 3.9+ replacement.
+    """
     try:
         if settings.is_nim:
-            return await loop.run_in_executor(None, _embed_nim, text_input)
+            return await asyncio.to_thread(_embed_nim, text_input)
         else:
-            return await loop.run_in_executor(None, _embed_gemini, text_input)
+            return await asyncio.to_thread(_embed_gemini, text_input)
     except Exception as e:
         logger.warning(f"[MEMORY] embedding failed: {e}")
         return []
