@@ -86,7 +86,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A core.celery_app worker --loglevel=info --concurrency=4
+    command: celery -A core.celery_app worker --loglevel=info --concurrency=2
 
   beat:
     build:
@@ -104,19 +104,8 @@ services:
         condition: service_healthy
     command: celery -A core.celery_app beat --loglevel=info
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: twinai_pgadmin
-    restart: unless-stopped
-    environment:
-      # TC-030 fix: credentials are now sourced from .env — never hardcoded.
-      # Set PGADMIN_EMAIL and PGADMIN_PASSWORD in your .env before running.
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@twinai.dev}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
-    ports:
-      - "5050:80"
-    depends_on:
-      - db
+  # pgAdmin removed from production — use docker-compose.dev.yml instead.
+  # Run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d pgadmin
 
 volumes:
   postgres_data:

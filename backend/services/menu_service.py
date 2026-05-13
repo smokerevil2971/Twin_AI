@@ -108,7 +108,8 @@ async def send_products_menu(adapter, phone: str, db: AsyncSession, page: int = 
             row_id = f"prod_{product.id}"
             price_str = f"₹{product.price:,.0f}" if product.price else "Price on request"
             description = product.description[:60] if product.description else price_str
-            list_rows.append({"id": row_id, "title": product.name, "description": description})
+            title = product.name[:21] + "..." if len(product.name) > 24 else product.name
+            list_rows.append({"id": row_id, "title": title, "description": description})
             mapping[row_id] = str(product.id)
 
         # 4.1: Always show Back to Menu as first navigation row

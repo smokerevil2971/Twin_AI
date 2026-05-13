@@ -61,3 +61,6 @@ read_docx.py
 backend/recent_logs*.txt
 backend/celerybeat-schedule
 *.log
+
+# ─── Dustbin (archived / unused files) ───────────────────────────
+dustbin/

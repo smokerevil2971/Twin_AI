@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV TOOLS ONLY — Do NOT run this on the production VPS.
+# Use this file locally when you need to inspect the database via pgAdmin.
+#
+# Usage:
+#   Start pgAdmin:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d pgadmin
+#   Stop pgAdmin:   docker compose stop pgadmin
+#   Open browser:   http://localhost:5050
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: twinai_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@twinai.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      - db

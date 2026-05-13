@@ -87,7 +87,7 @@ async def embed_and_save(conversation_id: uuid.UUID, user_message: str, db: Asyn
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
         await db.execute(
             text(
-                "UPDATE conversations SET embedding = :vec::vector "
+                "UPDATE conversations SET embedding = CAST(:vec AS vector) "
                 "WHERE id = :cid"
             ),
             {"vec": vec_str, "cid": str(conversation_id)},
@@ -123,7 +123,7 @@ async def search_memory(
                 "WHERE client_id = :cid "
                 "  AND embedding IS NOT NULL "
                 "  AND response IS NOT NULL "
-                "ORDER BY embedding <=> :vec::vector "
+                "ORDER BY embedding <=> CAST(:vec AS vector) "
                 "LIMIT :top_k"
             ),
             {"cid": client_id, "vec": vec_str, "top_k": top_k},
