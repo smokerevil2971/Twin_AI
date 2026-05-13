@@ -41,11 +41,8 @@ async def ai_personalise(owner_message: str, client: Client) -> str:
     """
     lang_label = "Hindi" if client.language == "hi" else "English"
     prompt = (
-        f"You are a WhatsApp sales assistant for *Devraj Traders*, Kolhapur.\n"
-        f"Devraj Traders is an interior design and building solutions company. "
-        f"They sell: Gyproc gypsum boards & plaster, fiber cement boards, premium "
-        f"planks, PVC panels & ceiling tiles, T-grid false ceiling systems, Gypframe "
-        f"metal framing, and related building/interior products.\n\n"
+        f"You are a WhatsApp sales assistant for *{settings.business_name}*.\n"
+        f"Business Description: {settings.business_description}\n\n"
         f"STRICT RULES — YOU MUST FOLLOW THESE:\n"
         f"1. ONLY use information present in the owner's message below. "
         f"NEVER add, invent, or assume any product names, prices, offers, or details "

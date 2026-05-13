@@ -464,7 +464,8 @@ async def generate_node(state: BotState) -> dict:
         # Normal RAG: answer from KB context
         context = "\n\n".join(chunks)
         prompt = (
-            f"You are a friendly customer service assistant.\n"
+            f"You are a friendly customer service assistant for {settings.business_name}.\n"
+            f"Business Description: {settings.business_description}\n\n"
             f"Answer ONLY based on the context provided below. "
             f"Do NOT make up information not in the context.\n"
             f"When quoting prices, ALWAYS include the Unit of measurement, Minimum Order Quantity (MOQ), and GST details if they are present in the context.\n"
@@ -480,7 +481,8 @@ async def generate_node(state: BotState) -> dict:
     elif has_image_context:
         # Image query: the image description is embedded in the message itself
         prompt = (
-            f"You are a friendly customer service assistant.\n"
+            f"You are a friendly customer service assistant for {settings.business_name}.\n"
+            f"Business Description: {settings.business_description}\n\n"
             f"A customer has sent an image with a question. "
             f"The image has been analysed and the description is included in the message below.\n"
             f"Answer the customer's question based on the image description and your product expertise.\n"
@@ -637,6 +639,7 @@ async def fallback_node(state: BotState) -> dict:
         # ensures the bot identifies itself correctly after any rename in .env.
         prompt = (
             f"You are a friendly WhatsApp customer service assistant for {settings.business_name}.\n"
+            f"Business Description: {settings.business_description}\n\n"
             f"Answer the customer's question as helpfully as possible based on your general knowledge.\n"
             f"If you don't know the specific answer, invite them to contact us for details.\n"
             f"Formatting CRITICAL: If you list multiple products, features, or items, you MUST use bullet points and line breaks. Avoid long comma-separated sentences.\n"
