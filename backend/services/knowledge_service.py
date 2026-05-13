@@ -34,7 +34,7 @@ from sqlalchemy import select, update, func, delete as sa_delete
 from fastapi import HTTPException
 
 from core.config import settings
-from models.models import KnowledgeBase
+from models.models import KnowledgeBase, KnowledgeChunk
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +396,21 @@ async def ingest_document(
         is_active=True,
     )
     db.add(kb_record)
+    
+    # Dual-write: insert pgvector chunks
+    import json
+    pg_chunks = []
+    for i, chunk_text in enumerate(chunks):
+        pg_chunks.append(
+            KnowledgeChunk(
+                knowledge_base_id=doc_id,
+                content=chunk_text,
+                embedding=embeddings[i],
+                chunk_metadata=json.dumps(metadata_list[i])
+            )
+        )
+    db.add_all(pg_chunks)
+    
     await db.commit()
     await db.refresh(kb_record)
 
@@ -476,6 +491,11 @@ async def delete_document(
         logger.info(f"[KB] Deleted {len(record.chroma_ids)} vectors for doc {doc_id}")
     except Exception as e:
         logger.warning(f"[KB] ChromaDB delete warning: {e}")
+
+    # Delete pgvector chunks
+    await db.execute(
+        sa_delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_base_id == doc_id)
+    )
 
     # Mark inactive in Postgres
     await db.execute(

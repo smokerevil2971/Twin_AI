@@ -187,3 +187,21 @@ class Offer(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ─── Knowledge Chunk (pgvector migration) ────────────────────────────────────
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        Index("ix_knowledge_chunks_kb_id", "knowledge_base_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 1024-dim for NIM models (same as Conversation.embedding)
+    embedding: Mapped[list | None] = mapped_column(Vector(1024), nullable=True)
+    chunk_metadata: Mapped[str | None] = mapped_column(Text, nullable=True) # store as JSON string
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
