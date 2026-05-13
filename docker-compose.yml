@@ -86,7 +86,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A core.celery_app worker --loglevel=info --concurrency=2
+    command: >
+      sh -c "celery -A core.celery_app worker --loglevel=info --concurrency=$${CELERY_CONCURRENCY:-4}"
 
   beat:
     build:

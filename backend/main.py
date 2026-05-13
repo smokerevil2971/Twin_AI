@@ -159,3 +159,13 @@ async def health():
         "env": settings.app_env
     }
 
+# ─── API v1 Router Setup ──────────────────────────────────────────────────────
+api_v1_prefix = "/api/v1"
+app.include_router(auth_router, prefix=f"{api_v1_prefix}/auth", tags=["auth"])
+app.include_router(clients_router, prefix=f"{api_v1_prefix}/clients", tags=["clients"])
+app.include_router(broadcasts_router, prefix=f"{api_v1_prefix}/broadcasts", tags=["broadcasts"])
+# Note: webhooks_router already sets its own prefix="/webhooks", so this mounts at /api/v1/webhooks
+app.include_router(webhooks_router, prefix=api_v1_prefix, tags=["webhooks"])
+app.include_router(knowledge_router, prefix=f"{api_v1_prefix}/kb", tags=["knowledge_base"])
+app.include_router(products_router, prefix=f"{api_v1_prefix}/products", tags=["products"])
+

@@ -15,10 +15,11 @@ class Settings(BaseSettings):
     # ── Database ─────────────────────────────────────────────────────────────────
     database_url: str
 
-    # ── Redis ────────────────────────────────────────────────────────────────────
+    # ── Redis / Celery ───────────────────────────────────────────────────────────
     redis_url: str = "redis://redis:6379/0"
     celery_broker_url: str = "redis://redis:6379/0"
     celery_result_backend: str = "redis://redis:6379/1"
+    celery_concurrency: int = 4
 
     # ── ChromaDB ─────────────────────────────────────────────────────────────────
     chroma_host: str = "chromadb"
