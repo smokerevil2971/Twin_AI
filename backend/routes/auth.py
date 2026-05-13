@@ -99,7 +99,9 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
             )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Redis rate limit check failed: {e}")
         pass  # Degrade gracefully if Redis is unavailable — never hard-block login
 
     # ── Credential check ──────────────────────────────────────────────────────

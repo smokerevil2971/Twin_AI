@@ -198,7 +198,7 @@ def _vision_nim(prompt: str, b64: str, mime_type: str) -> str:
 def _vision_gemini(prompt: str, b64: str, mime_type: str) -> str:
     """Image description via Gemini Vision."""
     import google.generativeai as genai
-    genai.configure(api_key=settings.gemini_api_key)
+
     model_name = settings.multimodal_model.removeprefix("models/")
     model = genai.GenerativeModel(model_name)
     resp = model.generate_content([

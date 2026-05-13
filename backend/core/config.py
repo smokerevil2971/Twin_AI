@@ -209,3 +209,7 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+if settings.gemini_api_key:
+    import google.generativeai as genai
+    genai.configure(api_key=settings.gemini_api_key)

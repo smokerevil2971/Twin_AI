@@ -161,11 +161,15 @@ async def health():
 
 # ─── API v1 Router Setup ──────────────────────────────────────────────────────
 api_v1_prefix = "/api/v1"
-app.include_router(auth_router, prefix=f"{api_v1_prefix}/auth", tags=["auth"])
-app.include_router(clients_router, prefix=f"{api_v1_prefix}/clients", tags=["clients"])
-app.include_router(broadcasts_router, prefix=f"{api_v1_prefix}/broadcasts", tags=["broadcasts"])
+from fastapi import Depends
+from core.rate_limit import api_rate_limiter
+
+app.include_router(auth_router, prefix=f"{api_v1_prefix}/auth", tags=["auth"], dependencies=[Depends(api_rate_limiter)])
+app.include_router(clients_router, prefix=f"{api_v1_prefix}/clients", tags=["clients"], dependencies=[Depends(api_rate_limiter)])
+app.include_router(broadcasts_router, prefix=f"{api_v1_prefix}/broadcasts", tags=["broadcasts"], dependencies=[Depends(api_rate_limiter)])
 # Note: webhooks_router already sets its own prefix="/webhooks", so this mounts at /api/v1/webhooks
+# We don't rate limit webhooks because third parties might send bursts and handle their own retry logic.
 app.include_router(webhooks_router, prefix=api_v1_prefix, tags=["webhooks"])
-app.include_router(knowledge_router, prefix=f"{api_v1_prefix}/kb", tags=["knowledge_base"])
-app.include_router(products_router, prefix=f"{api_v1_prefix}/products", tags=["products"])
+app.include_router(knowledge_router, prefix=f"{api_v1_prefix}/kb", tags=["knowledge_base"], dependencies=[Depends(api_rate_limiter)])
+app.include_router(products_router, prefix=f"{api_v1_prefix}/products", tags=["products"], dependencies=[Depends(api_rate_limiter)])
 

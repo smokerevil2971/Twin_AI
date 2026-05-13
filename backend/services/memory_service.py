@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def _embed_gemini(text_input: str) -> list:
     import google.generativeai as genai
-    genai.configure(api_key=settings.gemini_api_key)
+
     result = genai.embed_content(
         model=settings.embedding_model,
         content=text_input,

@@ -314,7 +314,7 @@ def _embed_gemini(text: str) -> list:
     """Single-query Gemini embedding."""
     import google.generativeai as genai
 
-    genai.configure(api_key=settings.gemini_api_key)
+
     result = genai.embed_content(
         model=settings.embedding_model,
         content=text,

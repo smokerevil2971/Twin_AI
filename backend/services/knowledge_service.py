@@ -270,7 +270,7 @@ def _embed_texts_gemini(texts: list[str]) -> list[list[float]]:
     """Embed via Google Gemini embedding-001."""
     import google.generativeai as genai
 
-    genai.configure(api_key=settings.gemini_api_key)
+
     embeddings = []
     batch_size = 100
     for i in range(0, len(texts), batch_size):

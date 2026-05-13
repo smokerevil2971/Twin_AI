@@ -6,6 +6,9 @@ Thin wrapper around redis.asyncio.
 from redis.asyncio import Redis, from_url
 from core.config import settings
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 _redis: Redis | None = None
 
@@ -46,7 +49,8 @@ async def get_onboard_state(phone: str) -> str | None:
     """Return current onboarding state for phone, or None if not onboarding."""
     try:
         return await get_redis().get(f"onboard:{phone}")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
         return None
 
 
@@ -54,16 +58,16 @@ async def set_onboard_state(phone: str, state: str) -> None:
     """Set onboarding state for phone with 24-hour TTL."""
     try:
         await get_redis().set(f"onboard:{phone}", state, ex=settings.onboard_state_ttl_seconds)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 async def get_conversation_history(phone: str) -> list[dict]:
     """Return the last 3 turns of conversation history for this phone."""
     try:
         raw = await get_redis().get(f"chat_history:{phone}")
         if raw:
             return json.loads(raw)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
     return []
 
 
@@ -84,15 +88,15 @@ async def add_conversation_history(phone: str, user_msg: str, bot_msg: str) -> N
             history = history[-max_messages:]
             
         await r.set(key, json.dumps(history), ex=settings.chat_history_ttl_seconds)  # TTL from config
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 async def clear_onboard_state(phone: str) -> None:
     """Delete onboarding state — client is fully onboarded."""
     try:
         await get_redis().delete(f"onboard:{phone}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 # ─── Menu state helpers ───────────────────────────────────────────────────────
@@ -101,7 +105,8 @@ async def get_menu_state(phone: str) -> str | None:
     """Return current menu state for phone, or None if no active menu."""
     try:
         return await get_redis().get(f"menu:{phone}")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
         return None
 
 
@@ -110,8 +115,8 @@ async def set_menu_state(phone: str, state: str) -> None:
     try:
         from core.config import settings
         await get_redis().set(f"menu:{phone}", state, ex=settings.menu_state_ttl_seconds)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 async def clear_menu_state(phone: str) -> None:
@@ -120,8 +125,8 @@ async def clear_menu_state(phone: str) -> None:
         r = get_redis()
         await r.delete(f"menu:{phone}")
         await r.delete(f"menu_page:{phone}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 async def get_menu_page(phone: str) -> dict:
@@ -133,8 +138,8 @@ async def get_menu_page(phone: str) -> dict:
         raw = await get_redis().get(f"menu_page:{phone}")
         if raw:
             return json.loads(raw)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
     return {}
 
 
@@ -147,8 +152,8 @@ async def set_menu_page(phone: str, mapping: dict) -> None:
             json.dumps(mapping),
             ex=settings.menu_state_ttl_seconds,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 # ─── Twilio ContentSid cache ──────────────────────────────────────────────────
@@ -162,7 +167,8 @@ async def get_cached_content_sid(cache_key: str) -> str | None:
     """
     try:
         return await get_redis().get(cache_key)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
         return None
 
 
@@ -170,8 +176,8 @@ async def cache_content_sid(cache_key: str, sid: str) -> None:
     """Cache a Twilio ContentSid permanently (no expiry — it never changes)."""
     try:
         await get_redis().set(cache_key, sid)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 # ─── Menu interaction counters (for analytics) ────────────────────────────────
@@ -201,8 +207,8 @@ async def increment_menu_counter(item_type: str, item_id: str) -> None:
         if not created:
             # Key already existed — just increment (TTL stays intact from creation)
             await r.incr(key)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
 
 
 async def get_top_menu_items(item_type: str, n: int = 3) -> list[tuple[str, int]]:
@@ -225,5 +231,6 @@ async def get_top_menu_items(item_type: str, n: int = 3) -> list[tuple[str, int]
                 pairs.append((item_id, int(cnt)))
         pairs.sort(key=lambda x: x[1], reverse=True)
         return pairs[:n]
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Redis operation failed: {e}")
         return []
