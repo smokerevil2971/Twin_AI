@@ -38,9 +38,7 @@ from services.guardrails.input_guard import check_input
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
 
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from core.utils import utcnow
 
 
 # LOW-02 fix: Removed duplicate lowercase keys ("submitted", "delivered", "read",

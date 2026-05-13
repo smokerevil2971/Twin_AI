@@ -15,9 +15,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from core.database import Base
 
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from core.utils import utcnow
 
 
 # ─── Owner (single business owner — replaces Tenant) ─────────────────────────

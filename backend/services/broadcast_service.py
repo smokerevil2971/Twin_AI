@@ -19,9 +19,7 @@ from models.models import Broadcast, BroadcastRecipient, Client
 
 logger = logging.getLogger(__name__)
 
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from core.utils import utcnow
 
 
 def personalise(template: str, client: Client) -> str:
