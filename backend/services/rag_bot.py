@@ -18,7 +18,7 @@ import httpx
 from datetime import datetime, timezone
 from typing import Any, TypedDict, Optional
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, START, END
 
 from core.config import settings
 from core.redis_client import increment_rate
@@ -803,7 +803,7 @@ def build_rag_graph():
     g.add_node("fallback", fallback_node)
     g.add_node("output", output_node)
 
-    g.set_entry_point("sanitise")
+    g.add_edge(START, "sanitise")
     g.add_edge("sanitise", "rate_limit")
     g.add_conditional_edges("rate_limit", should_fallback_after_rate)
     g.add_conditional_edges("order_intent", should_fallback_after_order_intent)
