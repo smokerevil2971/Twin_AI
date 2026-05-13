@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # ── Business / Brand Identity ────────────────────────────────────────────────
     # Used in welcome messages and filenames sent to customers
     business_name: str = "Devraj Traders"
+    business_description: str = ""
     catalogue_filename: str = "Devraj_Traders_Product_Catalogue.pdf"
     timezone: str = "Asia/Kolkata"
 

@@ -45,91 +45,23 @@ if settings.sentry_dsn:
         ],
     )
 
-# ─── App ──────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="Devraj Traders — System",
-    version="2.0.0",
-    docs_url="/docs" if settings.app_env == "development" else None,
-    redoc_url=None,
-)
+from contextlib import asynccontextmanager
 
-# ─── CORS ─────────────────────────────────────────────────────────────────────
-# HIGH-05 fix: Restrict to explicit method and header allowlists.
-# Using allow_methods=["*"] + allow_headers=["*"] with allow_credentials=True
-# allows any origin (if misconfigured) to make credentialed requests with any
-# HTTP verb — including DELETE on admin endpoints.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Accept"],
-)
-
-# ─── Request Logging ──────────────────────────────────────────────────────────
-app.middleware("http")(logging_middleware)
-
-# ─── Global Error Handlers ────────────────────────────────────────────────────
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "success": False,
-            "data": None,
-            "error": {"message": "Validation error", "detail": exc.errors()},
-        },
-    )
-
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={
-            "success": False,
-            "data": None,
-            "error": {"message": f"Route {request.url.path} not found"},
-        },
-    )
-
-@app.exception_handler(500)
-async def server_error_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={
-            "success": False,
-            "data": None,
-            "error": {"message": "Internal server error"},
-        },
-    )
-
-# ─── Routers ──────────────────────────────────────────────────────────────────
-app.include_router(auth_router)
-app.include_router(clients_router)
-app.include_router(broadcasts_router)
-app.include_router(webhooks_router)
-app.include_router(knowledge_router)
-app.include_router(products_router)
-
-# ─── Static Media Files (/media/filename) ─────────────────────────────────────
-# Images downloaded from Twilio (with auth) are cached here and served publicly
-# so they can be used as MediaUrl in outbound WhatsApp messages via ngrok.
-UPLOADS_DIR = settings.media_cache_dir
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-app.mount("/media", StaticFiles(directory=UPLOADS_DIR), name="media")
-
-# ─── Startup Checks ───────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_checks():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    TC-028: Verify database connectivity at startup.
-    Exits immediately with a clear error log if DATABASE_URL is wrong,
-    rather than silently failing on the first request.
-
-    TC-019: Warn loudly if OWNER_PHONE is unset so operators know
-    WhatsApp owner commands (ADD, REMOVE, BROADCAST, etc.) are disabled.
+    FastAPI Lifespan context manager (replaces deprecated @app.on_event("startup")).
+    Runs startup checks before accepting requests.
     """
     from core.database import engine
+
+    # P1.7 — SECRET_KEY length validation
+    if len(settings.secret_key) < 32:
+        logger.critical(
+            "❌ SECURITY: SECRET_KEY must be at least 32 characters long. "
+            "Generate one with: openssl rand -hex 32"
+        )
+        sys.exit(1)
 
     # TC-028 — verify DB
     try:
@@ -175,6 +107,19 @@ async def startup_checks():
         )
     else:
         logger.info(f"✅ Owner phone configured: {settings.owner_phone}")
+
+    yield
+    
+    # Cleanup on shutdown (if needed)
+
+# ─── App ──────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="Devraj Traders — System",
+    version="2.0.0",
+    docs_url="/docs" if settings.app_env == "development" else None,
+    redoc_url=None,
+    lifespan=lifespan,
+)
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
