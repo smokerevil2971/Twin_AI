@@ -506,10 +506,13 @@ async def generate_node(state: BotState) -> dict:
             response_text = await asyncio.to_thread(_generate_gemini, prompt)
         logger.info(f"[BOT][GENERATE] OK — response {len(response_text)} chars via {provider}")
 
-        # Layer 4: record token usage (best-effort; token count estimated from chars)
+        # Layer 4: record token usage (accurate with tiktoken)
         try:
             from services.guardrails.ops_guard import record_tokens
-            _approx_tokens = max(1, len(response_text) // 4 + len(prompt) // 4)
+            import tiktoken
+            # cl100k_base is a good proxy for most modern LLMs (Llama 3, Gemini)
+            enc = tiktoken.get_encoding("cl100k_base")
+            _approx_tokens = len(enc.encode(prompt)) + len(enc.encode(response_text))
             await record_tokens(state["phone"], _approx_tokens)
         except Exception as _te:
             logger.debug(f"[GUARDRAIL][OPS] token record failed: {_te}")
