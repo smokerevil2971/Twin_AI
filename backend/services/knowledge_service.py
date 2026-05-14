@@ -210,6 +210,43 @@ def query_knowledge_base(
         return {"documents": [], "distances": []}
 
 
+async def query_knowledge_base_pgvector(
+    db: AsyncSession,
+    query_embedding: list[float],
+    n_results: int = 15,
+) -> dict:
+    """
+    Query PostgreSQL (pgvector) for top-k chunks most similar to the query embedding.
+    Only returns chunks where the parent knowledge base is_active == True.
+    Returns the same format as query_knowledge_base for drop-in replacement.
+    """
+    from models.models import KnowledgeChunk, KnowledgeBase
+    from sqlalchemy import select
+
+    try:
+        distance = KnowledgeChunk.embedding.cosine_distance(query_embedding).label("distance")
+        q = (
+            select(KnowledgeChunk, distance)
+            .join(KnowledgeBase, KnowledgeChunk.knowledge_base_id == KnowledgeBase.id)
+            .where(KnowledgeBase.is_active == True)
+            .order_by(distance)
+            .limit(n_results)
+        )
+        
+        results = (await db.execute(q)).all()
+        
+        docs = []
+        dists = []
+        for chunk, dist in results:
+            docs.append(chunk.content)
+            dists.append(float(dist))
+            
+        return {"documents": docs, "distances": dists}
+    except Exception as e:
+        logger.error(f"[KB] pgvector query failed: {e}")
+        return {"documents": [], "distances": []}
+
+
 # ─── Embeddings (dual-provider) ───────────────────────────────────────────────
 
 

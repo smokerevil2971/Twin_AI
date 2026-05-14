@@ -131,7 +131,7 @@ class Conversation(Base):
     # P1.1 fix: NIM nemoretriever-300m-embed-v1 produces 1024-dim vectors.
     # Gemini embedding-001 produces 768-dim. Column is set to 1024 (NIM).
     # If switching to Gemini embeddings, update Vector(1024) → Vector(768) AND run alembic migration.
-    embedding: Mapped[list | None] = mapped_column(Vector(1024), nullable=True)
+    embedding: Mapped[list | None] = mapped_column(Vector(2048), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -201,7 +201,7 @@ class KnowledgeChunk(Base):
     knowledge_base_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # 1024-dim for NIM models (same as Conversation.embedding)
-    embedding: Mapped[list | None] = mapped_column(Vector(1024), nullable=True)
+    embedding: Mapped[list | None] = mapped_column(Vector(2048), nullable=True)
     chunk_metadata: Mapped[str | None] = mapped_column(Text, nullable=True) # store as JSON string
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
