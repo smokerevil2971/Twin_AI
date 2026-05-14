@@ -21,7 +21,7 @@ from langgraph.graph import StateGraph, START, END
 
 from core.config import settings
 from core.redis_client import increment_rate
-from services.knowledge_service import embed_texts, query_knowledge_base
+from services.knowledge_service import embed_texts
 from services.messaging_adapter import get_messaging_adapter
 
 from core.logging import logger
@@ -324,21 +324,16 @@ def _embed_gemini(text: str) -> list:
 
 async def retrieve_node(state: BotState) -> dict:
     """
-    Query ChromaDB for top-K relevant chunks.
-
-    MED-02 fix: The previous implementation was a plain `def` that called
-    `query_knowledge_base()` (a blocking HTTP call to the ChromaDB service)
-    directly on the async event loop. This stalled ALL concurrent requests
-    for the entire duration of the ChromaDB round-trip (typically 50-300ms).
-
-    Fix: Run the blocking call inside asyncio's default executor (thread pool)
-    so the event loop stays free to handle other in-flight requests.
+    Query pgvector for top-K relevant chunks.
     """
     if not state.get("query_embedding"):
         return {"retrieved_chunks": [], "retrieved_distances": []}
-    # P1.5 fix: replaced deprecated asyncio.get_event_loop().run_in_executor() with asyncio.to_thread()
-    results = await asyncio.to_thread(
-        query_knowledge_base,
+        
+    db = state.get("_db")
+    from services.knowledge_service import query_knowledge_base_pgvector
+    
+    results = await query_knowledge_base_pgvector(
+        db,
         state["query_embedding"],
         settings.rag_top_k_results,
     )

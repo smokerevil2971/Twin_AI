@@ -34,9 +34,9 @@ async def test_rag_pipeline_injection_routing(mock_history, mock_rate, mock_db):
 @pytest.mark.asyncio
 @patch("core.redis_client.increment_rate", return_value=1)
 @patch("core.redis_client.get_conversation_history", return_value=[])
-@patch("services.rag_bot._embed_gemini", return_value=[0.1] * 1024)
-@patch("services.rag_bot._embed_nim", return_value=[0.1] * 1024)
-@patch("services.rag_bot.query_knowledge_base", return_value={"documents": ["Doc 1"], "distances": [0.1]})
+@patch("services.rag_bot._embed_gemini", return_value=[0.1] * 2048)
+@patch("services.rag_bot._embed_nim", return_value=[0.1] * 2048)
+@patch("services.knowledge_service.query_knowledge_base_pgvector", new_callable=AsyncMock, return_value={"documents": ["Doc 1"], "distances": [0.1]})
 async def test_rag_pipeline_normal_query(mock_query, mock_nim, mock_gemini, mock_history, mock_rate, mock_db, monkeypatch):
     
     with patch("services.rag_bot._generate_nim", return_value="Here is your answer"), \
