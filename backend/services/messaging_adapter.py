@@ -6,13 +6,12 @@ Swap between providers via MESSAGING_PROVIDER env var:
   twilio  → TwilioAdapter     (sandbox / secondary)
   mock    → MockMessagingAdapter (local dev, no real API calls)
 """
-import logging
 import uuid
 from abc import ABC, abstractmethod
 
 from core.config import settings
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 class MessagingAdapter(ABC):

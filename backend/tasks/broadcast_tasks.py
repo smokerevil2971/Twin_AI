@@ -6,7 +6,6 @@ Celery tasks for broadcast sending.
 """
 import uuid
 import asyncio
-import logging
 from datetime import datetime, timezone, timedelta
 from celery import shared_task
 from sqlalchemy import select, update
@@ -17,7 +16,7 @@ from core.database import get_async_sessionmaker
 from models.models import Broadcast, BroadcastRecipient, Client, Offer
 from services.messaging_adapter import get_messaging_adapter
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 # ─── 3.5: Offer Expiry Check ──────────────────────────────────────────────────

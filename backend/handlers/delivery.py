@@ -1,11 +1,10 @@
-import logging
 from sqlalchemy import select, update, func
 from core.database import get_db_context
 from core.utils import utcnow
 from models.models import BroadcastRecipient, Broadcast
 from handlers.event import InboundEvent
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 GUPSHUP_STATUS_MAP = {
     "SENT": "sent",

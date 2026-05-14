@@ -1,8 +1,7 @@
-import logging
 from fastapi import Request, HTTPException
 from core.redis_client import increment_rate
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 async def api_rate_limiter(request: Request):
     """

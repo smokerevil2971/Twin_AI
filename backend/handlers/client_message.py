@@ -1,4 +1,3 @@
-import logging
 from fastapi import Response
 from core.config import settings
 from services import menu_service
@@ -6,7 +5,7 @@ from services.rag_bot import run_bot
 from services.messaging_adapter import get_messaging_adapter
 from handlers.event import InboundEvent
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 class ClientMessageHandler:
     @staticmethod

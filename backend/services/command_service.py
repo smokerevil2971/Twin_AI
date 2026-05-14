@@ -20,7 +20,6 @@ Supported commands via registry:
   <PDF/DOCX/TXT media>   → knowledge base ingestion
   Anything else → falls through to the RAG bot
 """
-import logging
 import re
 from typing import Optional
 
@@ -35,7 +34,7 @@ from services.products_offers_service import (
     bulk_import_offers,
 )
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ─── Phone normalisation ──────────────────────────────────────────────────────
 def _normalise_phone(raw: str) -> str:

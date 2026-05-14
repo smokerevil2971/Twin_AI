@@ -11,7 +11,6 @@ CSV column matching is case-insensitive and whitespace-tolerant so owners
 can use real spreadsheet headers like "Product Name" or "Price (INR)".
 """
 import io
-import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.models import Product, Offer
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 # ─── Column-name aliases ─────────────────────────────────────────────────────

@@ -12,7 +12,6 @@ Each node receives the full BotState dict and returns a partial update.
 
 import re
 import asyncio
-import logging
 import uuid
 import httpx
 from datetime import datetime, timezone
@@ -25,7 +24,7 @@ from core.redis_client import increment_rate
 from services.knowledge_service import embed_texts, query_knowledge_base
 from services.messaging_adapter import get_messaging_adapter
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 # ─── Injection guard blocklist ────────────────────────────────────────────────

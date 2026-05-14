@@ -1,4 +1,3 @@
-import logging
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -13,7 +12,7 @@ from services.messaging_adapter import get_messaging_adapter
 from tasks.broadcast_tasks import send_broadcast
 from handlers.owner_commands.base import BaseCommand, CommandPayload, register_command
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 @register_command(r"/broadcasts?")
 class BroadcastsCommand(BaseCommand):

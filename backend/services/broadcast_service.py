@@ -6,7 +6,6 @@ import asyncio
 import uuid
 import csv
 import io
-import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +16,7 @@ from openai import AsyncOpenAI
 from core.config import settings
 from models.models import Broadcast, BroadcastRecipient, Client
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 from core.utils import utcnow
 

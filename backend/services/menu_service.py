@@ -15,7 +15,6 @@ Called from routes/webhooks.py:
   2. Before RAG bot               → handle_menu_input() returns True if handled
   3. After RAG bot answers        → send_main_menu()
 """
-import logging
 import uuid
 from typing import Optional
 
@@ -31,7 +30,7 @@ from core.redis_client import (
 )
 from models.models import Product, Offer
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ── Main menu button definitions (fixed) ──────────────────────────────────────
 

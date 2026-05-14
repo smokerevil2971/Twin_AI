@@ -1,4 +1,3 @@
-import logging
 import sys
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from core.config import settings
-from core.middleware import logging_middleware, RequestIDFilter
+from core.middleware import logging_middleware
 from routes.auth import router as auth_router
 from routes.clients import router as clients_router
 from routes.broadcasts import router as broadcasts_router
@@ -19,15 +18,9 @@ from routes.knowledge_base import router as knowledge_router
 from routes.products import router as products_router
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.app_env == "development" else logging.INFO,
-    format="%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s — %(message)s",
-)
-root_logger = logging.getLogger()
-req_filter = RequestIDFilter()
-for handler in root_logger.handlers:
-    handler.addFilter(req_filter)
-logger = logging.getLogger(__name__)
+from core.logging import configure_logging
+configure_logging()
+from core.logging import logger
 
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration

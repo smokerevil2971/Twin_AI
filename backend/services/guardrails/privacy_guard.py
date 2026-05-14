@@ -16,9 +16,8 @@ Usage:
 """
 
 import re
-import logging
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ── PII regex patterns ─────────────────────────────────────────────────────────
 PII_PATTERNS: dict[str, re.Pattern] = {

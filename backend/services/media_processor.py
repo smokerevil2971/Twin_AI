@@ -9,13 +9,12 @@ Provider switch: set LLM_PROVIDER=nim or LLM_PROVIDER=gemini in .env
 """
 import asyncio
 import base64
-import logging
 import httpx
 import fitz  # PyMuPDF
 
 from core.config import settings
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # MIME types we support
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}

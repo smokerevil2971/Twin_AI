@@ -1,4 +1,3 @@
-import logging
 from fastapi import Response
 from core.config import settings
 from core.redis_client import (
@@ -9,7 +8,7 @@ from services import menu_service
 from services.messaging_adapter import get_messaging_adapter
 from handlers.event import InboundEvent
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 class OnboardingHandler:
     @staticmethod

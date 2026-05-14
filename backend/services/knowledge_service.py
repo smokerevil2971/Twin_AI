@@ -7,7 +7,6 @@ Pipeline:
 
 import asyncio
 import uuid
-import logging
 from datetime import datetime, timezone
 from typing import Optional, Any
 
@@ -36,7 +35,7 @@ from fastapi import HTTPException
 from core.config import settings
 from models.models import KnowledgeBase, KnowledgeChunk
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 

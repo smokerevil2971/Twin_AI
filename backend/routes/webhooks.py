@@ -8,7 +8,6 @@ Security:
   - In mock mode, signature check always passes
   - Returns 200 immediately — Gupshup retries on non-2xx
 """
-import logging
 from fastapi import APIRouter, Request, Response
 from core.database import get_db_context
 from core.config import settings
@@ -25,7 +24,7 @@ from handlers.client import ClientHandler
 from models.models import Client
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 class WebhookRouter:
     @staticmethod

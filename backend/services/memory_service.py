@@ -9,7 +9,6 @@ Two public functions:
   - search_memory(client_id, vec, db) : find top-K past exchanges relevant to a new query
 """
 import asyncio
-import logging
 import uuid
 from typing import Optional
 
@@ -18,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 # ─── Embedding helpers (reuse existing logic from rag_bot) ────────────────────

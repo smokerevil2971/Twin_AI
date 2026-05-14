@@ -17,13 +17,12 @@ Redis key schema:
 """
 
 import hashlib
-import logging
 from dataclasses import dataclass
 
 from core.config import settings
 from core.redis_client import get_redis
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ── Configurable limits (read from settings, with sane defaults) ──────────────
 _MAX_LEN    = getattr(settings, "max_message_length", 1000)

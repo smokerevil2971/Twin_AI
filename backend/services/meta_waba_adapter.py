@@ -19,7 +19,6 @@ Media strategy: upload-first
 import asyncio
 import hashlib
 import hmac
-import logging
 import mimetypes
 
 import httpx
@@ -27,7 +26,7 @@ import httpx
 from services.messaging_adapter import MessagingAdapter
 from core.config import settings
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # Meta Graph API base
 _GRAPH_BASE = "https://graph.facebook.com"

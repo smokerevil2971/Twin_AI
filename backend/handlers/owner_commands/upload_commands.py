@@ -1,4 +1,3 @@
-import logging
 import re
 from datetime import datetime, timezone
 import httpx
@@ -11,7 +10,7 @@ from services.messaging_adapter import get_messaging_adapter
 from services.products_offers_service import bulk_import_products, bulk_import_offers, parse_products_file, parse_offers_file
 from handlers.owner_commands.base import BaseCommand, CommandPayload, register_upload_handler
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 _CLIENT_SHEET_TYPES = {
     "text/csv",

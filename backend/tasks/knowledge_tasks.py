@@ -11,13 +11,12 @@ This file MUST define the task with exactly that name to avoid the
 "Task not found" silent failure exposed in TC-029.
 """
 import asyncio
-import logging
 from datetime import datetime, timezone
 
 from core.celery_app import celery_app
 from core.database import get_async_sessionmaker
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 
 @celery_app.task(name="tasks.knowledge_tasks.deactivate_expired_offers")

@@ -1,28 +1,25 @@
 import time
-import logging
 import uuid
 import contextvars
 from fastapi import Request
 
-logger = logging.getLogger("twinai.access")
+from core.logging import logger
 
-request_id_var = contextvars.ContextVar("request_id", default="-")
-
-class RequestIDFilter(logging.Filter):
-    def filter(self, record):
-        record.request_id = request_id_var.get()
-        return True
+import structlog
 
 async def logging_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
-    token = request_id_var.set(request_id)
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
     start = time.perf_counter()
     response = await call_next(request)
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
     logger.info(
-        f"{request.method} {request.url.path} → {response.status_code} "
-        f"[{duration_ms}ms]"
+        "request_completed",
+        method=request.method,
+        path=request.url.path,
+        status=response.status_code,
+        duration_ms=duration_ms
     )
     response.headers["X-Request-ID"] = request_id
-    request_id_var.reset(token)
     return response

@@ -6,9 +6,8 @@ Thin wrapper around redis.asyncio.
 from redis.asyncio import Redis, from_url
 from core.config import settings
 import json
-import logging
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 _redis: Redis | None = None
 

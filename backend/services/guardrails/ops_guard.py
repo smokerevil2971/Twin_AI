@@ -14,14 +14,13 @@ All checks degrade gracefully if Redis is unavailable — LLM calls are allowed
 through rather than silently dropped, with a warning log.
 """
 
-import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from core.config import settings
 from core.redis_client import get_redis
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ── Configurable limits ─────────────────────────────────────────────────────
 _DAILY_LIMIT        = getattr(settings, "daily_token_limit", 0)          # 0 = unlimited

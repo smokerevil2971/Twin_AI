@@ -1,4 +1,3 @@
-import logging
 from fastapi import Response
 from sqlalchemy import select
 from core.database import AsyncSessionLocal
@@ -6,7 +5,7 @@ from models.models import Client
 from services.messaging_adapter import get_messaging_adapter
 from handlers.owner_commands.base import BaseCommand, CommandPayload, register_command
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 def _normalise_phone(raw: str) -> str:
     import re

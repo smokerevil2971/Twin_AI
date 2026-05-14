@@ -1,4 +1,3 @@
-import logging
 import re
 from datetime import datetime, timezone, timedelta
 from fastapi import Response
@@ -9,7 +8,7 @@ from services.messaging_adapter import get_messaging_adapter
 from core.redis_client import get_top_menu_items
 from handlers.owner_commands.base import BaseCommand, CommandPayload, register_command
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 @register_command(r"/analytics(?:\s+(7|30))?")
 class AnalyticsCommand(BaseCommand):

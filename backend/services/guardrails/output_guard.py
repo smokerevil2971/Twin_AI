@@ -12,12 +12,11 @@ and return the original response rather than silently dropping it.
 """
 
 import re
-import logging
 from dataclasses import dataclass
 
 from core.config import settings
 
-logger = logging.getLogger(__name__)
+from core.logging import logger
 
 # ── Configurable limits ────────────────────────────────────────────────────────
 _MAX_RESPONSE_LEN = getattr(settings, "max_response_length", 1500)
