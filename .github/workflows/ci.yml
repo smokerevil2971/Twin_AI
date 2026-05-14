@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master", "v4-meta-adapter" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      # Optional: Provide postgres and redis if your tests require them
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: twinai_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pytest-cov ruff httpx
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+
+      - name: Prepare Environment
+        run: |
+          # Copy example env to .env for tests
+          if [ -f .env.example ]; then cp .env.example backend/.env; fi
+          if [ -f .env.example ]; then cp .env.example .env; fi
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/twinai_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/0
+          SECRET_KEY: "test-secret-key-32-chars-minimum-length"
+          NVIDIA_API_KEY: "dummy-key"
+          META_ACCESS_TOKEN: "dummy-token"
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+          pytest backend/tests/ --cov=backend --cov-report=xml
+
+      - name: Lint with Ruff
+        run: |
+          ruff check backend/
