@@ -2,7 +2,7 @@
 Knowledge Base ingestion service — Phase 3.1
 
 Pipeline:
-  file bytes → extract text → chunk → embed (NIM or Gemini) → store (ChromaDB) → record (Postgres)
+  file bytes → extract text → chunk → embed (NIM or Gemini) → store (pgvector + Postgres)
 """
 
 import asyncio
@@ -16,16 +16,7 @@ import pytesseract
 import io
 import os
 
-# Disable ChromaDB telemetry to prevent PostHog crash
-os.environ["CHROMADB_TELEMETRY_ANONYMIZED"] = "False"
-import chromadb
 
-# Monkey patch to prevent PostHog argument mismatch crash in newer posthog package
-try:
-    from chromadb.telemetry.product.posthog import Posthog
-    Posthog.capture = lambda *args, **kwargs: None
-except Exception:
-    pass
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -136,77 +127,7 @@ def chunk_text(text: str) -> list[str]:
     return chunks
 
 
-# ─── ChromaDB connection ──────────────────────────────────────────────────────
-
-# TC-012 / Minor M5 fix: Cache the ChromaDB HttpClient as a singleton so we
-# don't open a new TCP connection on every query call.
-# Note: chromadb.HttpClient is a callable factory in some chromadb versions,
-# so we use Optional[Any] to avoid a TypeError on annotation evaluation.
-_chroma_client: Optional[Any] = None
-
-
-def get_chroma_client() -> chromadb.HttpClient:
-    global _chroma_client
-    if _chroma_client is None:
-        _chroma_client = chromadb.HttpClient(
-            host=settings.chroma_host,
-            port=settings.chroma_port,
-            settings=chromadb.config.Settings(anonymized_telemetry=False),
-        )
-    return _chroma_client
-
-
-def get_chroma_collection() -> chromadb.Collection:
-    """Returns the single shared ChromaDB collection.
-
-    TC-012 fix: Raises HTTPException(503) if ChromaDB is unreachable so the
-    caller gets a clean error instead of a raw 500.
-    """
-    try:
-        client = get_chroma_client()
-        return client.get_or_create_collection(
-            name="knowledge_base",
-            metadata={"hnsw:space": "cosine"},
-        )
-    except Exception as e:
-        logger.error(f"[KB] ChromaDB connection failed: {e}")
-        raise HTTPException(
-            503,
-            "Knowledge base service is temporarily unavailable. Please try again shortly.",
-        )
-
-
-def query_knowledge_base(
-    query_embedding: list[float],
-    n_results: int = 15,
-) -> dict:
-    """
-    Query ChromaDB for top-k chunks most similar to the query embedding.
-    Only returns chunks where is_active == 'true'.
-
-    TC-012 fix: Returns empty results gracefully if ChromaDB is unreachable
-    (the RAG bot will fall back to its no_context path rather than crashing).
-    """
-    try:
-        collection = get_chroma_collection()
-        count = collection.count()
-        if count == 0:
-            return {"documents": [], "distances": []}
-
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(n_results, count),
-            where={"is_active": "true"},
-            include=["documents", "distances"],
-        )
-        docs = results["documents"][0] if results["documents"] else []
-        dists = results["distances"][0] if results["distances"] else []
-        return {"documents": docs, "distances": dists}
-    except HTTPException:
-        raise  # re-raise clean 503 from get_chroma_collection
-    except Exception as e:
-        logger.error(f"[KB] ChromaDB query failed: {e}")
-        return {"documents": [], "distances": []}
+# ─── Postgres/pgvector connection ──────────────────────────────────────────────
 
 
 async def query_knowledge_base_pgvector(
@@ -217,11 +138,7 @@ async def query_knowledge_base_pgvector(
     """
     Query PostgreSQL (pgvector) for top-k chunks most similar to the query embedding.
     Only returns chunks where the parent knowledge base is_active == True.
-    Returns the same format as query_knowledge_base for drop-in replacement.
     """
-    from models.models import KnowledgeChunk, KnowledgeBase
-    from sqlalchemy import select
-
     try:
         distance = KnowledgeChunk.embedding.cosine_distance(query_embedding).label("distance")
         q = (
@@ -339,7 +256,7 @@ async def ingest_document(
     1. Extract text
     2. Chunk text
     3. Generate embeddings (NIM or Gemini)
-    4. Store in ChromaDB
+    4. Store chunks in pgvector
     5. Save KnowledgeBase record in Postgres
     """
     # Validate file size
@@ -381,8 +298,6 @@ async def ingest_document(
         logger.error(f"[KB] Embedding failed: {e}")
         raise HTTPException(502, f"Embedding service error: {str(e)}")
 
-    # Store in ChromaDB
-    collection = get_chroma_collection()
     doc_id = uuid.uuid4()
 
     # ── Layer 5: Privacy Guardrail — redact PII before storing ────────────────
@@ -393,13 +308,12 @@ async def ingest_document(
         if pii_count:
             logger.warning(
                 f"[GUARDRAIL][PRIVACY] Redacted PII in {pii_count}/{len(chunks)} "
-                f"chunks of '{filename}' before ChromaDB ingestion"
+                f"chunks of '{filename}' before pgvector ingestion"
             )
         chunks = cleaned_chunks
     except Exception as _pe:
         logger.warning(f"[GUARDRAIL][PRIVACY] PII scan failed (non-fatal): {_pe}")
 
-    chroma_ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
     metadata_list = [
         {
             "doc_id": str(doc_id),
@@ -413,40 +327,33 @@ async def ingest_document(
         for i in range(len(chunks))
     ]
 
-    collection.add(
-        ids=chroma_ids,
-        embeddings=embeddings,
-        documents=chunks,
-        metadatas=metadata_list,
-    )
-    logger.info(f"[KB] Indexed {len(chunks)} chunks into knowledge_base collection")
+    # Store chunks in pgvector
+    import json
+    pg_chunks = [
+        KnowledgeChunk(
+            knowledge_base_id=doc_id,
+            content=chunk,
+            embedding=embeddings[i],
+            chunk_metadata=json.dumps(metadata_list[i])
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+    db.add_all(pg_chunks)
+    logger.info(f"[KB] Indexed {len(chunks)} chunks into pgvector")
 
     # Save Postgres record
     kb_record = KnowledgeBase(
         id=doc_id,
         filename=filename,
         category=category,
-        chroma_ids=chroma_ids,
+        chroma_ids=[],
         valid_from=valid_from,
         valid_until=valid_until,
         is_active=True,
     )
     db.add(kb_record)
     
-    # Dual-write: insert pgvector chunks
-    import json
-    pg_chunks = []
-    for i, chunk_text in enumerate(chunks):
-        pg_chunks.append(
-            KnowledgeChunk(
-                knowledge_base_id=doc_id,
-                content=chunk_text,
-                embedding=embeddings[i],
-                chunk_metadata=json.dumps(metadata_list[i])
-            )
-        )
-    db.add_all(pg_chunks)
-    
+
     await db.commit()
     await db.refresh(kb_record)
 
@@ -520,13 +427,8 @@ async def delete_document(
     if not record:
         raise HTTPException(404, "Document not found.")
 
-    # Remove from ChromaDB
-    try:
-        collection = get_chroma_collection()
-        collection.delete(ids=record.chroma_ids)
-        logger.info(f"[KB] Deleted {len(record.chroma_ids)} vectors for doc {doc_id}")
-    except Exception as e:
-        logger.warning(f"[KB] ChromaDB delete warning: {e}")
+    # Delete pgvector chunks only
+    logger.info(f"[KB] Deleting pgvector chunks for doc {doc_id}")
 
     # Delete pgvector chunks
     await db.execute(
@@ -548,7 +450,7 @@ async def delete_document(
 async def clear_all_documents(db: AsyncSession) -> dict:
     """
     Wipe the entire knowledge base:
-    1. Delete and recreate the ChromaDB collection (fastest bulk-delete).
+    1. Hard-delete all KnowledgeChunk rows from pgvector.
     2. Hard-delete all KnowledgeBase rows from Postgres.
 
     Returns a summary dict with counts.
@@ -556,23 +458,9 @@ async def clear_all_documents(db: AsyncSession) -> dict:
     # Count rows before deletion for the response
     total = (await db.execute(select(func.count()).select_from(KnowledgeBase))).scalar_one()
 
-    # ── ChromaDB: drop & recreate collection ──────────────────────────────────
-    try:
-        client = get_chroma_client()
-        try:
-            client.delete_collection("knowledge_base")
-            logger.info("[KB] ChromaDB collection 'knowledge_base' dropped")
-        except Exception as e:
-            logger.warning(f"[KB] Could not drop ChromaDB collection: {e}")
-        # Recreate an empty collection so subsequent uploads work immediately
-        client.get_or_create_collection(
-            name="knowledge_base",
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info("[KB] ChromaDB collection 'knowledge_base' recreated (empty)")
-    except Exception as e:
-        logger.error(f"[KB] ChromaDB clear failed: {e}")
-        raise HTTPException(503, f"ChromaDB clear failed: {str(e)}")
+    # ── pgvector + Postgres: hard-delete all records ────────────────────────────
+    await db.execute(sa_delete(KnowledgeChunk))
+    logger.info(f"[KB] Deleted all KnowledgeChunk rows from pgvector")
 
     # ── Postgres: hard-delete all KB records ──────────────────────────────────
     await db.execute(sa_delete(KnowledgeBase))
