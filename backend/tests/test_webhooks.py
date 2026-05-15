@@ -16,6 +16,7 @@ def test_meta_webhook_missing_signature(client, monkeypatch):
 def test_meta_webhook_invalid_signature(client, monkeypatch):
     from core.config import settings
     monkeypatch.setattr(settings, "messaging_provider", "meta")
+    monkeypatch.setattr(settings, "meta_app_secret", "test_secret")  # must be set so HMAC check runs
     
     payload = {"entry": [{"changes": [{"value": {"messages": [{"from": "1234567890", "text": {"body": "hello"}}]}}]}]}
     headers = {"X-Hub-Signature-256": "sha256=invalid_signature"}
